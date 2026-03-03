@@ -20,14 +20,12 @@ export default function Home() {
           >
             Get Started
           </Link>
-          <a
-            href="https://github.com/rahuliitk/openlintel"
-            target="_blank"
-            rel="noopener noreferrer"
+          <Link
+            href="/auth/signin"
             className="inline-flex h-11 items-center justify-center rounded-lg border border-input bg-background px-8 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
           >
-            GitHub
-          </a>
+            Sign In
+          </Link>
         </div>
       </div>
     </main>

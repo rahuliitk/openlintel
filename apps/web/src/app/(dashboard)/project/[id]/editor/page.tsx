@@ -1,6 +1,7 @@
 'use client';
 
 import { use, useState, useCallback, useRef, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { trpc } from '@/lib/trpc/client';
 import {
@@ -24,7 +25,6 @@ import {
 } from '@openlintel/ui';
 import {
   ArrowLeft,
-  Box,
   ChevronRight,
   Trash2,
   Copy,
@@ -32,16 +32,11 @@ import {
   EyeOff,
 } from 'lucide-react';
 
-import { Scene } from '@/components/editor-3d/scene';
-import { RoomGeometry } from '@/components/editor-3d/room-geometry';
-import { FurnitureObject } from '@/components/editor-3d/furniture-object';
-import { CameraControls } from '@/components/editor-3d/camera-controls';
 import { Toolbar, type EditorTool, type ViewPreset } from '@/components/editor-3d/toolbar';
 import { MaterialPanel, type MaterialPreset } from '@/components/editor-3d/material-panel';
 import { LightingPanel, getDefaultLightingConfig, type LightingConfig } from '@/components/editor-3d/lighting-panel';
-import { SnapGrid, SnapGridControls } from '@/components/editor-3d/snap-grid';
+import { SnapGridControls } from '@/components/editor-3d/snap-grid';
 import { CollabPresence } from '@/components/editor-3d/collab-presence';
-import { CollabCursors, useCollabSelectionEmitter } from '@/components/editor-3d/collab-cursors';
 import { createCollabSession, type CollabSession } from '@/lib/collaboration';
 import {
   getCatalogueByCategory,
@@ -51,6 +46,21 @@ import {
 } from '@/lib/gltf-loader';
 import { type GridSizeValue } from '@/lib/snap-engine';
 import { DEFAULT_ROOM } from '@/lib/room-builder';
+
+// Dynamically import the 3D viewport with SSR disabled.
+// @react-three/fiber accesses removed React 19 internals at module load time,
+// so it must never be evaluated on the server.
+const EditorViewport = dynamic(
+  () => import('@/components/editor-3d/editor-viewport'),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center bg-muted/30">
+        <p className="text-sm text-muted-foreground">Loading 3D viewport…</p>
+      </div>
+    ),
+  },
+);
 
 interface HistoryEntry {
   furniture: PlacedFurniture[];
@@ -91,7 +101,15 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
   // Collaboration session
   const [collab, setCollab] = useState<CollabSession | null>(null);
-  const emitSelectionChange = useCollabSelectionEmitter(collab?.socket ?? null);
+
+  // Emit selection change to collaborators (inline — avoids importing collab-cursors.tsx
+  // which transitively loads @react-three/drei and breaks React 19 SSR).
+  const emitSelectionChange = useCallback(
+    (objectId: string | null) => {
+      collab?.socket.emit('selection:change', { objectId: objectId || '' });
+    },
+    [collab],
+  );
 
   useEffect(() => {
     if (!project) return;
@@ -495,91 +513,28 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           ))}
         </div>
 
-        {/* 3D Viewport */}
+        {/* 3D Viewport — dynamically loaded with ssr:false to avoid @react-three/fiber React 19 incompatibility */}
         <div className="flex-1 overflow-hidden rounded-lg border">
-          {((project as any).rooms ?? []).length === 0 ? (
-            <div className="flex h-full items-center justify-center">
-              <div className="text-center">
-                <Box className="mx-auto mb-4 h-12 w-12 text-muted-foreground" />
-                <p className="text-sm font-medium">No rooms in this project</p>
-                <p className="text-xs text-muted-foreground">
-                  Add rooms to your project to start the 3D editor.
-                </p>
-                <Link href={`/project/${id}`}>
-                  <Button size="sm" className="mt-4">
-                    Go to Project
-                  </Button>
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <Scene showStats={false} environmentPreset="apartment">
-              <CameraControls
-                viewPreset={viewPreset}
-                roomLengthM={roomLengthM}
-                roomWidthM={roomWidthM}
-                roomHeightM={roomHeightM}
-              />
-              <RoomGeometry
-                dimensions={roomDimensions}
-                showCeiling={showCeiling}
-                showGrid={showGrid}
-              />
-              <SnapGrid
-                roomLengthM={roomLengthM}
-                roomWidthM={roomWidthM}
-                gridSize={gridSize}
-                visible={showGrid && snapEnabled}
-              />
-
-              {/* Dynamic lighting from config */}
-              <ambientLight
-                color={lightingConfig.ambientColor}
-                intensity={lightingConfig.ambientIntensity}
-              />
-              <directionalLight
-                color={lightingConfig.directionalColor}
-                intensity={lightingConfig.directionalIntensity}
-                position={lightingConfig.directionalPosition}
-                castShadow
-              />
-
-              {/* Furniture objects */}
-              {furniture.map((item) => (
-                <FurnitureObject
-                  key={item.id}
-                  item={item}
-                  isSelected={selectedObjectId === item.id}
-                  activeTool={activeTool === 'measure' ? 'select' : activeTool}
-                  gridSize={gridSize}
-                  snapEnabled={snapEnabled}
-                  roomLengthM={roomLengthM}
-                  roomWidthM={roomWidthM}
-                  onSelect={handleSelectObject}
-                  onMove={handleMoveFurniture}
-                  onRotate={handleRotateFurniture}
-                  onScale={handleScaleFurniture}
-                />
-              ))}
-
-              {/* Collaborative cursors from other users */}
-              <CollabCursors
-                socket={collab?.socket ?? null}
-                currentUserId="user"
-              />
-
-              {/* Deselect when clicking on empty space */}
-              <mesh
-                position={[0, -0.01, 0]}
-                rotation={[-Math.PI / 2, 0, 0]}
-                onClick={() => handleSelectObject(null)}
-                visible={false}
-              >
-                <planeGeometry args={[100, 100]} />
-                <meshBasicMaterial transparent opacity={0} />
-              </mesh>
-            </Scene>
-          )}
+          <EditorViewport
+            projectId={id}
+            hasRooms={((project as any).rooms ?? []).length > 0}
+            roomDimensions={roomDimensions}
+            furniture={furniture}
+            selectedObjectId={selectedObjectId}
+            activeTool={activeTool}
+            viewPreset={viewPreset}
+            gridSize={gridSize}
+            snapEnabled={snapEnabled}
+            showGrid={showGrid}
+            showCeiling={showCeiling}
+            lightingConfig={lightingConfig}
+            collabSocket={collab?.socket ?? null}
+            currentUserId="user"
+            onSelectObject={handleSelectObject}
+            onMoveFurniture={handleMoveFurniture}
+            onRotateFurniture={handleRotateFurniture}
+            onScaleFurniture={handleScaleFurniture}
+          />
         </div>
 
         {/* Right panel: Properties / Materials / Lighting */}

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useParams } from 'next/navigation';
 import {
   LayoutDashboard,
   FolderKanban,
@@ -85,8 +85,11 @@ const projectNavigation = [
   { name: 'Style Quiz', href: 'style-quiz', icon: Sparkles },
 ];
 
-export function Sidebar({ projectId }: { projectId?: string }) {
+export function Sidebar({ projectId: propProjectId }: { projectId?: string }) {
   const pathname = usePathname();
+  const params = useParams();
+  // Auto-detect projectId from URL when on /project/[id]/* routes
+  const projectId = propProjectId ?? (params?.id as string | undefined);
 
   return (
     <aside className="flex h-full w-60 flex-col border-r bg-gray-50/50">

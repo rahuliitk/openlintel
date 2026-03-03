@@ -92,7 +92,23 @@ function SpendingTrend({ data }: { data: { month: string; amount: number }[] }) 
 }
 
 export default function GlobalAnalyticsPage() {
-  const { data: overview, isLoading } = trpc.analytics.globalOverview.useQuery();
+  const { data: overview, isLoading, isError, error, refetch } = trpc.analytics.globalOverview.useQuery();
+
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-4">
+        <p className="text-sm text-destructive font-medium">
+          Failed to load analytics: {(error as any)?.message ?? 'Unknown error'}
+        </p>
+        <button
+          onClick={() => refetch()}
+          className="rounded-lg border px-4 py-2 text-sm hover:bg-muted transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (isLoading || !overview) {
     return (

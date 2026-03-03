@@ -29,7 +29,11 @@ import {
   Skeleton,
   Separator,
 } from '@openlintel/ui';
-import { Plus, ArrowLeft, Trash2 } from 'lucide-react';
+import {
+  Plus, ArrowLeft, Trash2,
+  Palette, Map, Box, FileText, ShoppingCart, Scissors, Zap,
+  CalendarDays, CreditCard, Sparkles, Camera, BarChart3,
+} from 'lucide-react';
 
 const ROOM_TYPES = [
   'living_room', 'bedroom', 'kitchen', 'bathroom', 'dining', 'study',
@@ -129,6 +133,66 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             <Trash2 className="h-4 w-4" />
             Delete
           </Button>
+        </div>
+      </div>
+
+      <Separator className="mb-6" />
+
+      {/* Quick Stats */}
+      <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-2xl font-bold">{((project as any).rooms ?? []).length}</p>
+            <p className="text-xs text-muted-foreground">Rooms</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-2xl font-bold capitalize">{project.status.replace('_', ' ')}</p>
+            <p className="text-xs text-muted-foreground">Status</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-2xl font-bold">{project.unitSystem === 'metric' ? 'Metric' : 'Imperial'}</p>
+            <p className="text-xs text-muted-foreground">Unit System</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-2xl font-bold">{new Date(project.updatedAt).toLocaleDateString()}</p>
+            <p className="text-xs text-muted-foreground">Last Updated</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Quick Navigation */}
+      <div className="mb-8">
+        <h2 className="mb-3 text-lg font-semibold">Quick Access</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+          {[
+            { name: 'Designs', href: `/project/${id}/designs`, icon: Palette },
+            { name: 'Style Quiz', href: `/project/${id}/style-quiz`, icon: Sparkles },
+            { name: 'Floor Plan', href: `/project/${id}/floor-plan`, icon: Map },
+            { name: '3D Editor', href: `/project/${id}/editor`, icon: Box },
+            { name: 'Drawings', href: `/project/${id}/drawings`, icon: FileText },
+            { name: 'BOM', href: `/project/${id}/bom`, icon: ShoppingCart },
+            { name: 'Cut List', href: `/project/${id}/cutlist`, icon: Scissors },
+            { name: 'MEP', href: `/project/${id}/mep`, icon: Zap },
+            { name: 'Timeline', href: `/project/${id}/timeline`, icon: CalendarDays },
+            { name: 'Payments', href: `/project/${id}/payments`, icon: CreditCard },
+            { name: 'Reconstruction', href: `/project/${id}/reconstruction`, icon: Camera },
+            { name: 'Analytics', href: `/project/${id}/analytics`, icon: BarChart3 },
+          ].map((item) => (
+            <Link key={item.name} href={item.href}>
+              <Card className="transition-shadow hover:shadow-md cursor-pointer">
+                <CardContent className="flex flex-col items-center gap-2 p-4 text-center">
+                  <item.icon className="h-5 w-5 text-muted-foreground" />
+                  <span className="text-sm font-medium">{item.name}</span>
+                </CardContent>
+              </Card>
+            </Link>
+          ))}
         </div>
       </div>
 

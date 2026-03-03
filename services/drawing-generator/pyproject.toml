@@ -35,9 +35,6 @@ packages = ["src"]
 [tool.hatch.metadata]
 allow-direct-references = true
 
-[project.optional-dependencies.local]
-openlintel-shared = { path = "../../packages/python-shared", editable = true }
-
 # Path dependency for local development (pip install -e .)
 [tool.hatch.envs.default]
 dependencies = [

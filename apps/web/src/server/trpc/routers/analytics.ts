@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import {
   projects, rooms, designVariants, bomResults,
-  eq, and, sql, count, sum,
+  eq, and, gte, sql, count, sum,
 } from '@openlintel/db';
 import { router, protectedProcedure } from '../init';
 
@@ -51,7 +51,7 @@ export const analyticsRouter = router({
       .innerJoin(projects, eq(rooms.projectId, projects.id))
       .where(and(
         eq(projects.userId, ctx.userId),
-        sql`${bomResults.createdAt} >= ${sixMonthsAgo}`,
+        gte(bomResults.createdAt, sixMonthsAgo),
       ))
       .groupBy(sql`TO_CHAR(${bomResults.createdAt}, 'Mon')`, sql`EXTRACT(MONTH FROM ${bomResults.createdAt})`)
       .orderBy(sql`EXTRACT(MONTH FROM ${bomResults.createdAt})`);
