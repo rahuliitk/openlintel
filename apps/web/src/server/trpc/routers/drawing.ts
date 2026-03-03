@@ -2,7 +2,104 @@ import { z } from 'zod';
 import { drawingResults, designVariants, projects, jobs, eq, and } from '@openlintel/db';
 import { router, protectedProcedure } from '../init';
 
-const DRAWING_SERVICE_URL = process.env.DRAWING_SERVICE_URL || 'http://localhost:8003';
+// ---------------------------------------------------------------------------
+// Inline drawing generation helpers
+// ---------------------------------------------------------------------------
+
+const DRAWING_TYPE_CONFIG: Record<
+  string,
+  { scale: string; titlePrefix: string; description: string }
+> = {
+  floor_plan: {
+    scale: '1:50',
+    titlePrefix: 'Floor Plan',
+    description: 'Architectural floor plan showing walls, doors, windows, and dimensions',
+  },
+  furnished_plan: {
+    scale: '1:50',
+    titlePrefix: 'Furnished Plan',
+    description: 'Floor plan with furniture layout, clearance zones, and annotations',
+  },
+  elevation: {
+    scale: '1:25',
+    titlePrefix: 'Elevation',
+    description: 'Interior wall elevation showing cabinetry, finishes, and vertical dimensions',
+  },
+  electrical_layout: {
+    scale: '1:50',
+    titlePrefix: 'Electrical Layout',
+    description: 'Electrical plan showing switch points, socket outlets, light positions, and circuit routing',
+  },
+  rcp: {
+    scale: '1:50',
+    titlePrefix: 'Reflected Ceiling Plan',
+    description: 'Ceiling plan showing light fixtures, AC diffusers, false ceiling edges, and levels',
+  },
+  flooring: {
+    scale: '1:50',
+    titlePrefix: 'Flooring Layout',
+    description: 'Flooring pattern layout with tile/plank orientation, borders, and threshold details',
+  },
+  section: {
+    scale: '1:25',
+    titlePrefix: 'Section',
+    description: 'Cross-section showing construction detail, material layers, and internal heights',
+  },
+  plumbing: {
+    scale: '1:50',
+    titlePrefix: 'Plumbing Layout',
+    description: 'Plumbing plan showing water supply lines, drainage, and fixture connections',
+  },
+};
+
+function generateDrawingMetadata(
+  drawingType: string,
+  drawingIndex: number,
+  roomType: string,
+  lengthMm: number,
+  widthMm: number,
+  heightMm: number,
+  projectName: string,
+  variantName: string,
+) {
+  const config = DRAWING_TYPE_CONFIG[drawingType] ?? {
+    scale: '1:50',
+    titlePrefix: drawingType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+    description: `${drawingType} drawing`,
+  };
+
+  const drawingNumber = `DWG-${String(drawingIndex + 1).padStart(3, '0')}`;
+
+  return {
+    scale: config.scale,
+    metadata: {
+      drawingType,
+      drawingNumber,
+      scale: config.scale,
+      description: config.description,
+      dimensions: {
+        lengthMm,
+        widthMm,
+        heightMm,
+        areaSqm: Math.round((lengthMm * widthMm) / 1e6 * 100) / 100,
+      },
+      titleBlock: {
+        projectName,
+        drawingTitle: `${config.titlePrefix} - ${variantName}`,
+        drawingNumber,
+        scale: config.scale,
+        roomType: roomType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+        date: new Date().toISOString().split('T')[0],
+        revision: 'R0',
+        drawnBy: 'OpenLintel (auto-generated)',
+        checkedBy: 'Pending review',
+      },
+      sheets: 1,
+      paperSize: config.scale === '1:25' ? 'A3' : 'A2',
+      generatedAt: new Date().toISOString(),
+    },
+  };
+}
 
 export const drawingRouter = router({
   listByDesignVariant: protectedProcedure
@@ -83,24 +180,72 @@ export const drawingRouter = router({
           designVariantId: input.designVariantId,
         })
         .returning();
+      if (!job) throw new Error('Failed to create job');
 
-      fetch(`${DRAWING_SERVICE_URL}/api/v1/drawings/job`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          job_id: job.id,
-          design_variant_id: input.designVariantId,
-          user_id: ctx.userId,
-          drawing_types: input.drawingTypes,
-          room: {
-            id: variant.room.id,
-            type: variant.room.type,
-            length_mm: variant.room.lengthMm ?? 0,
-            width_mm: variant.room.widthMm ?? 0,
-            height_mm: variant.room.heightMm ?? 2700,
+      // --- Inline drawing generation (replaces external microservice call) ---
+
+      // Mark job as running
+      await ctx.db
+        .update(jobs)
+        .set({ status: 'running', startedAt: new Date(), progress: 5 })
+        .where(eq(jobs.id, job.id));
+
+      // Generate a drawing result for each requested drawing type
+      const drawingRecords = [];
+      for (let i = 0; i < input.drawingTypes.length; i++) {
+        const drawingType = input.drawingTypes[i]!;
+        const { metadata } = generateDrawingMetadata(
+          drawingType,
+          i,
+          variant.room.type,
+          variant.room.lengthMm ?? 0,
+          variant.room.widthMm ?? 0,
+          variant.room.heightMm ?? 2700,
+          variant.room.project.name,
+          variant.name,
+        );
+
+        const [record] = await ctx.db
+          .insert(drawingResults)
+          .values({
+            designVariantId: input.designVariantId,
+            jobId: job.id,
+            drawingType,
+            metadata,
+            // Storage keys are null — no actual file generated, just metadata
+            dxfStorageKey: null,
+            pdfStorageKey: null,
+            svgStorageKey: null,
+            ifcStorageKey: null,
+          })
+          .returning();
+        if (!record) throw new Error('Failed to create drawing record');
+
+        drawingRecords.push(record);
+
+        // Update progress proportionally
+        const progress = Math.round(((i + 1) / input.drawingTypes.length) * 90) + 5;
+        await ctx.db
+          .update(jobs)
+          .set({ progress })
+          .where(eq(jobs.id, job.id));
+      }
+
+      // Mark job as completed
+      await ctx.db
+        .update(jobs)
+        .set({
+          status: 'completed',
+          progress: 100,
+          completedAt: new Date(),
+          outputJson: {
+            designVariantId: input.designVariantId,
+            drawingCount: drawingRecords.length,
+            drawingTypes: input.drawingTypes,
+            drawingIds: drawingRecords.map((r) => r.id),
           },
-        }),
-      }).catch(() => {});
+        })
+        .where(eq(jobs.id, job.id));
 
       return job;
     }),

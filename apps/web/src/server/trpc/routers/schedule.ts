@@ -1,11 +1,9 @@
 import { z } from 'zod';
 import {
-  schedules, milestones, siteLogs, changeOrders, projects, jobs,
+  schedules, milestones, siteLogs, changeOrders, projects, rooms, jobs,
   eq, and,
 } from '@openlintel/db';
 import { router, protectedProcedure } from '../init';
-
-const PROJECT_SERVICE_URL = process.env.PROJECT_SERVICE_URL || 'http://localhost:8007';
 
 export const scheduleRouter = router({
   // ── Schedules ──────────────────────────────────────────────
@@ -32,6 +30,13 @@ export const scheduleRouter = router({
       });
       if (!project) throw new Error('Project not found');
 
+      // Count rooms in the project
+      const projectRooms = await ctx.db.query.rooms.findMany({
+        where: eq(rooms.projectId, input.projectId),
+      });
+      const roomCount = projectRooms.length || 1;
+
+      // Create a job for tracking
       const [job] = await ctx.db
         .insert(jobs)
         .values({
@@ -43,17 +48,108 @@ export const scheduleRouter = router({
         })
         .returning();
 
-      fetch(`${PROJECT_SERVICE_URL}/api/v1/schedules/job`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          job_id: job.id,
-          project_id: input.projectId,
-          user_id: ctx.userId,
-        }),
-      }).catch(() => {});
+      if (!job) throw new Error('Failed to create job');
 
-      return job;
+      // Generate construction schedule phases
+      const phases = [
+        { name: 'Site Preparation', duration: 3, dependencies: [] as string[], trade: 'General' },
+        { name: 'Demolition', duration: 2 + roomCount, dependencies: ['Site Preparation'], trade: 'Demolition' },
+        { name: 'Civil & Structural', duration: 5 + roomCount * 2, dependencies: ['Demolition'], trade: 'Civil' },
+        { name: 'Plumbing Rough-in', duration: 3 + roomCount, dependencies: ['Civil & Structural'], trade: 'Plumbing' },
+        { name: 'Electrical Rough-in', duration: 3 + roomCount, dependencies: ['Civil & Structural'], trade: 'Electrical' },
+        { name: 'HVAC Installation', duration: 4 + roomCount, dependencies: ['Plumbing Rough-in', 'Electrical Rough-in'], trade: 'HVAC' },
+        { name: 'Carpentry & Woodwork', duration: 5 + roomCount * 3, dependencies: ['HVAC Installation'], trade: 'Carpentry' },
+        { name: 'Flooring', duration: 3 + roomCount, dependencies: ['Carpentry & Woodwork'], trade: 'Flooring' },
+        { name: 'Painting & Finishes', duration: 3 + roomCount, dependencies: ['Flooring'], trade: 'Painting' },
+        { name: 'Fixture Installation', duration: 2 + roomCount, dependencies: ['Painting & Finishes'], trade: 'Fixtures' },
+        { name: 'Final Cleanup & Inspection', duration: 2, dependencies: ['Fixture Installation'], trade: 'General' },
+      ];
+
+      // Calculate start/end dates for each phase using dependency resolution
+      const today = new Date();
+      const phaseEndDays: Record<string, number> = {};
+      const tasks = phases.map((phase, idx) => {
+        let startDay = 0;
+        for (const dep of phase.dependencies) {
+          if (phaseEndDays[dep] !== undefined && phaseEndDays[dep] > startDay) {
+            startDay = phaseEndDays[dep];
+          }
+        }
+        const endDay = startDay + phase.duration;
+        phaseEndDays[phase.name] = endDay;
+
+        const startDate = new Date(today);
+        startDate.setDate(startDate.getDate() + startDay);
+        const endDate = new Date(today);
+        endDate.setDate(endDate.getDate() + endDay);
+
+        return {
+          id: `task-${idx + 1}`,
+          name: phase.name,
+          duration: phase.duration,
+          startDay,
+          endDay,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
+          dependencies: phase.dependencies,
+          trade: phase.trade,
+          status: 'pending',
+        };
+      });
+
+      // Total project duration
+      const totalDays = Math.max(...Object.values(phaseEndDays));
+      const projectEndDate = new Date(today);
+      projectEndDate.setDate(projectEndDate.getDate() + totalDays);
+
+      // Create schedule record
+      const [schedule] = await ctx.db
+        .insert(schedules)
+        .values({
+          projectId: input.projectId,
+          jobId: job.id,
+          tasks,
+          criticalPath: tasks.map((t) => t.id),
+          startDate: today,
+          endDate: projectEndDate,
+          metadata: { roomCount, totalDays },
+        })
+        .returning();
+
+      if (!schedule) throw new Error('Failed to create schedule');
+
+      // Create milestone records for each phase completion
+      for (const task of tasks) {
+        await ctx.db.insert(milestones).values({
+          scheduleId: schedule.id,
+          name: `${task.name} Complete`,
+          description: `Completion of ${task.name} phase (${task.duration} days, ${task.trade})`,
+          dueDate: new Date(task.endDate),
+          status: 'pending',
+        });
+      }
+
+      // Update job as completed
+      const outputJson = {
+        scheduleId: schedule.id,
+        tasks,
+        totalDays,
+        roomCount,
+        startDate: today.toISOString(),
+        endDate: projectEndDate.toISOString(),
+      };
+
+      await ctx.db
+        .update(jobs)
+        .set({
+          status: 'completed',
+          outputJson,
+          progress: 100,
+          completedAt: new Date(),
+        })
+        .where(eq(jobs.id, job.id));
+
+      return { ...job, status: 'completed', outputJson };
     }),
 
   // ── Milestones ─────────────────────────────────────────────
@@ -194,30 +290,10 @@ export const scheduleRouter = router({
       if (!order) throw new Error('Change order not found');
       if ((order as any).project.userId !== ctx.userId) throw new Error('Access denied');
 
-      try {
-        const res = await fetch(
-          `${PROJECT_SERVICE_URL}/api/v1/change-orders/${input.id}/analyze`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              change_order_id: input.id,
-              project_id: (order as any).projectId,
-              title: order.title,
-              description: order.description,
-              cost_impact: order.costImpact,
-              time_impact_days: order.timeImpactDays,
-            }),
-          },
-        );
-        if (!res.ok) throw new Error(`Analysis service returned ${res.status}`);
-        return await res.json() as { summary: string; risks: string[]; recommendations: string[] };
-      } catch {
-        return {
-          summary: `Change order "${order.title}" has a cost impact of $${order.costImpact ?? 0} and time impact of ${order.timeImpactDays ?? 0} days.`,
-          risks: [],
-          recommendations: [],
-        };
-      }
+      return {
+        summary: `Change order "${order.title}" has a cost impact of $${order.costImpact ?? 0} and time impact of ${order.timeImpactDays ?? 0} days.`,
+        risks: [],
+        recommendations: [],
+      };
     }),
 });

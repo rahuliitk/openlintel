@@ -32,7 +32,7 @@ export function CollabCursors({
 }) {
   const [cursors, setCursors] = useState<Map<string, CursorState>>(new Map());
   const [, setSelections] = useState<Map<string, SelectionState>>(new Map());
-  const cleanupRef = useRef<ReturnType<typeof setInterval>>();
+  const cleanupRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   useEffect(() => {
     if (!socket) return;

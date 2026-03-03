@@ -1,7 +1,17 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
-import { getPresignedUrl } from '@/lib/storage';
+import { getFile } from '@/lib/storage';
+
+const MIME_MAP: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.pdf': 'application/pdf',
+  '.svg': 'image/svg+xml',
+};
 
 export async function GET(
   _request: NextRequest,
@@ -15,10 +25,18 @@ export async function GET(
   const { key } = await params;
   const decodedKey = decodeURIComponent(key);
 
-  try {
-    const url = await getPresignedUrl(decodedKey);
-    return NextResponse.redirect(url);
-  } catch {
+  const buffer = await getFile(decodedKey);
+  if (!buffer) {
     return NextResponse.json({ error: 'File not found' }, { status: 404 });
   }
+
+  const ext = decodedKey.includes('.') ? '.' + decodedKey.split('.').pop()!.toLowerCase() : '';
+  const contentType = MIME_MAP[ext] || 'application/octet-stream';
+
+  return new NextResponse(new Uint8Array(buffer), {
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'private, max-age=3600',
+    },
+  });
 }

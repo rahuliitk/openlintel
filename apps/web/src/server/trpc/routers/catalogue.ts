@@ -1,19 +1,9 @@
 import { z } from 'zod';
+import {
+  categories, vendors, products, productPrices,
+  eq, and, ilike, or,
+} from '@openlintel/db';
 import { router, protectedProcedure } from '../init';
-
-const CATALOGUE_SERVICE_URL = process.env.CATALOGUE_SERVICE_URL || 'http://localhost:8006';
-
-async function catalogueFetch(path: string, options?: RequestInit) {
-  const res = await fetch(`${CATALOGUE_SERVICE_URL}${path}`, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => 'Unknown error');
-    throw new Error(`Catalogue service error: ${res.status} ${text}`);
-  }
-  return res.json();
-}
 
 export const catalogueRouter = router({
   // ── Product Queries ──────────────────────────────────────────
@@ -28,30 +18,53 @@ export const catalogueRouter = router({
       status: z.string().optional(),
       sortBy: z.string().default('name'),
     }))
-    .query(async ({ input }) => {
-      const params = new URLSearchParams();
-      params.set('page', String(input.page));
-      params.set('limit', String(input.limit));
-      if (input.categoryId) params.set('category_id', input.categoryId);
-      if (input.vendorId) params.set('vendor_id', input.vendorId);
-      if (input.brand) params.set('brand', input.brand);
-      if (input.material) params.set('material', input.material);
-      if (input.status) params.set('status', input.status);
-      params.set('sort_by', input.sortBy);
-      return catalogueFetch(`/api/v1/products?${params}`);
+    .query(async ({ ctx, input }) => {
+      const conditions = [];
+      if (input.categoryId) conditions.push(eq(products.categoryId, input.categoryId));
+      if (input.vendorId) conditions.push(eq(products.vendorId, input.vendorId));
+      if (input.brand) conditions.push(eq(products.brand, input.brand));
+      if (input.material) conditions.push(eq(products.material, input.material));
+      if (input.status) conditions.push(eq(products.status, input.status));
+
+      const where = conditions.length > 0 ? and(...conditions) : undefined;
+      const offset = (input.page - 1) * input.limit;
+
+      const items = await ctx.db.query.products.findMany({
+        where,
+        limit: input.limit,
+        offset,
+        orderBy: (p, { asc, desc }) => {
+          if (input.sortBy === 'price') return [asc(p.minPrice)];
+          if (input.sortBy === 'created_at') return [desc(p.createdAt)];
+          return [asc(p.name)];
+        },
+      });
+
+      return { items, page: input.page, limit: input.limit };
     }),
 
   searchProducts: protectedProcedure
     .input(z.object({ query: z.string(), limit: z.number().default(20) }))
-    .query(async ({ input }) => {
-      const params = new URLSearchParams({ q: input.query, limit: String(input.limit) });
-      return catalogueFetch(`/api/v1/products/search?${params}`);
+    .query(async ({ ctx, input }) => {
+      const items = await ctx.db.query.products.findMany({
+        where: or(
+          ilike(products.name, `%${input.query}%`),
+          ilike(products.description, `%${input.query}%`),
+        ),
+        limit: input.limit,
+      });
+
+      return { items };
     }),
 
   getProduct: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .query(async ({ input }) => {
-      return catalogueFetch(`/api/v1/products/${input.id}`);
+    .query(async ({ ctx, input }) => {
+      const product = await ctx.db.query.products.findFirst({
+        where: eq(products.id, input.id),
+      });
+      if (!product) throw new Error('Product not found');
+      return product;
     }),
 
   // ── Product Mutations ────────────────────────────────────────
@@ -70,7 +83,7 @@ export const catalogueRouter = router({
       finish: z.string().optional(),
       color: z.string().optional(),
       tags: z.array(z.string()).optional(),
-      specifications: z.record(z.unknown()).optional(),
+      specifications: z.record(z.string(), z.unknown()).optional(),
       dimensions: z.object({
         length_mm: z.number().optional(),
         width_mm: z.number().optional(),
@@ -83,11 +96,35 @@ export const catalogueRouter = router({
         unit: z.string().default('piece'),
       })).optional(),
     }))
-    .mutation(async ({ input }) => {
-      return catalogueFetch('/api/v1/products', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
+    .mutation(async ({ ctx, input }) => {
+      const { prices, ...productData } = input;
+
+      const [product] = await ctx.db
+        .insert(products)
+        .values({
+          ...productData,
+          tags: productData.tags || [],
+          specifications: productData.specifications || {},
+          dimensions: productData.dimensions || null,
+        })
+        .returning();
+
+      if (!product) throw new Error('Failed to create product');
+
+      // Insert price entries if provided
+      if (prices && prices.length > 0) {
+        for (const p of prices) {
+          await ctx.db.insert(productPrices).values({
+            productId: product.id,
+            vendorId: p.vendor_id,
+            price: p.price,
+            currency: p.currency,
+            unit: p.unit,
+          });
+        }
+      }
+
+      return product;
     }),
 
   updateProduct: protectedProcedure
@@ -109,18 +146,57 @@ export const catalogueRouter = router({
         unit: z.string().default('piece'),
       })).optional(),
     }))
-    .mutation(async ({ input }) => {
-      const { id, ...body } = input;
-      return catalogueFetch(`/api/v1/products/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(body),
-      });
+    .mutation(async ({ ctx, input }) => {
+      const { id, prices, ...data } = input;
+
+      const [updated] = await ctx.db
+        .update(products)
+        .set({ ...data, updatedAt: new Date() })
+        .where(eq(products.id, id))
+        .returning();
+
+      if (!updated) throw new Error('Product not found');
+
+      // If prices provided, upsert them
+      if (prices && prices.length > 0) {
+        for (const p of prices) {
+          // Check if price entry already exists for this vendor
+          const existing = await ctx.db.query.productPrices.findFirst({
+            where: and(
+              eq(productPrices.productId, id),
+              eq(productPrices.vendorId, p.vendor_id),
+            ),
+          });
+
+          if (existing) {
+            await ctx.db
+              .update(productPrices)
+              .set({ price: p.price, currency: p.currency, unit: p.unit })
+              .where(eq(productPrices.id, existing.id));
+          } else {
+            await ctx.db.insert(productPrices).values({
+              productId: id,
+              vendorId: p.vendor_id,
+              price: p.price,
+              currency: p.currency,
+              unit: p.unit,
+            });
+          }
+        }
+      }
+
+      return updated;
     }),
 
   deleteProduct: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .mutation(async ({ input }) => {
-      return catalogueFetch(`/api/v1/products/${input.id}`, { method: 'DELETE' });
+    .mutation(async ({ ctx, input }) => {
+      const [deleted] = await ctx.db
+        .delete(products)
+        .where(eq(products.id, input.id))
+        .returning();
+      if (!deleted) throw new Error('Product not found');
+      return { success: true, id: input.id };
     }),
 
   // ── Visual Search ────────────────────────────────────────────
@@ -130,33 +206,58 @@ export const catalogueRouter = router({
       embedding: z.array(z.number()).optional(),
       limit: z.number().default(10),
     }))
-    .mutation(async ({ input }) => {
-      return catalogueFetch('/api/v1/products/visual-search', {
-        method: 'POST',
-        body: JSON.stringify({
-          image_url: input.imageUrl,
-          embedding: input.embedding,
-          limit: input.limit,
-        }),
-      });
+    .mutation(async () => {
+      // No vector DB available — return empty results
+      return { items: [], message: 'Visual search is not available without a vector database.' };
     }),
 
   // ── Price Comparison ─────────────────────────────────────────
   compareProductPrices: protectedProcedure
     .input(z.object({ productId: z.string() }))
-    .query(async ({ input }) => {
-      return catalogueFetch(`/api/v1/products/${input.productId}/prices`);
+    .query(async ({ ctx, input }) => {
+      const priceEntries = await ctx.db.query.productPrices.findMany({
+        where: eq(productPrices.productId, input.productId),
+        with: { vendor: true },
+        orderBy: (p, { asc }) => [asc(p.price)],
+      });
+
+      return { prices: priceEntries };
     }),
 
   // ── Category Queries & Mutations ─────────────────────────────
   listCategories: protectedProcedure
-    .query(async () => {
-      return catalogueFetch('/api/v1/categories');
+    .query(async ({ ctx }) => {
+      const items = await ctx.db.query.categories.findMany({
+        orderBy: (c, { asc }) => [asc(c.sortOrder), asc(c.name)],
+      });
+      return items;
     }),
 
   getCategoryTree: protectedProcedure
-    .query(async () => {
-      return catalogueFetch('/api/v1/categories/tree');
+    .query(async ({ ctx }) => {
+      const allCategories = await ctx.db.query.categories.findMany({
+        orderBy: (c, { asc }) => [asc(c.sortOrder), asc(c.name)],
+      });
+
+      // Build tree structure in JS
+      type TreeNode = typeof allCategories[number] & { children: TreeNode[] };
+      const nodeMap = new Map<string, TreeNode>();
+      const roots: TreeNode[] = [];
+
+      for (const cat of allCategories) {
+        nodeMap.set(cat.id, { ...cat, children: [] });
+      }
+
+      for (const cat of allCategories) {
+        const node = nodeMap.get(cat.id)!;
+        if (cat.parentId && nodeMap.has(cat.parentId)) {
+          nodeMap.get(cat.parentId)!.children.push(node);
+        } else {
+          roots.push(node);
+        }
+      }
+
+      return roots;
     }),
 
   createCategory: protectedProcedure
@@ -167,17 +268,25 @@ export const catalogueRouter = router({
       icon: z.string().optional(),
       imageUrl: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
-      return catalogueFetch('/api/v1/categories', {
-        method: 'POST',
-        body: JSON.stringify({
+    .mutation(async ({ ctx, input }) => {
+      // Generate a slug from the name
+      const slug = input.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+
+      const [category] = await ctx.db
+        .insert(categories)
+        .values({
           name: input.name,
+          slug,
           description: input.description,
-          parent_id: input.parentId,
+          parentId: input.parentId,
           icon: input.icon,
-          image_url: input.imageUrl,
-        }),
-      });
+          imageUrl: input.imageUrl,
+        })
+        .returning();
+      return category;
     }),
 
   updateCategory: protectedProcedure
@@ -187,34 +296,63 @@ export const catalogueRouter = router({
       description: z.string().optional(),
       icon: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
-      const { id, ...body } = input;
-      return catalogueFetch(`/api/v1/categories/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(body),
-      });
+    .mutation(async ({ ctx, input }) => {
+      const { id, ...data } = input;
+      const updates: Record<string, any> = { ...data, updatedAt: new Date() };
+
+      // Update slug if name changed
+      if (data.name) {
+        updates.slug = data.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '');
+      }
+
+      const [updated] = await ctx.db
+        .update(categories)
+        .set(updates)
+        .where(eq(categories.id, id))
+        .returning();
+      if (!updated) throw new Error('Category not found');
+      return updated;
     }),
 
   deleteCategory: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .mutation(async ({ input }) => {
-      return catalogueFetch(`/api/v1/categories/${input.id}`, { method: 'DELETE' });
+    .mutation(async ({ ctx, input }) => {
+      const [deleted] = await ctx.db
+        .delete(categories)
+        .where(eq(categories.id, input.id))
+        .returning();
+      if (!deleted) throw new Error('Category not found');
+      return { success: true, id: input.id };
     }),
 
   // ── Vendor Queries & Mutations ───────────────────────────────
   listVendors: protectedProcedure
     .input(z.object({ page: z.number().default(1), limit: z.number().default(50) }).optional())
-    .query(async ({ input }) => {
-      const params = new URLSearchParams();
-      if (input?.page) params.set('page', String(input.page));
-      if (input?.limit) params.set('limit', String(input.limit));
-      return catalogueFetch(`/api/v1/vendors?${params}`);
+    .query(async ({ ctx, input }) => {
+      const page = input?.page || 1;
+      const limit = input?.limit || 50;
+      const offset = (page - 1) * limit;
+
+      const items = await ctx.db.query.vendors.findMany({
+        limit,
+        offset,
+        orderBy: (v, { asc }) => [asc(v.name)],
+      });
+
+      return { items, page, limit };
     }),
 
   getVendor: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .query(async ({ input }) => {
-      return catalogueFetch(`/api/v1/vendors/${input.id}`);
+    .query(async ({ ctx, input }) => {
+      const vendor = await ctx.db.query.vendors.findFirst({
+        where: eq(vendors.id, input.id),
+      });
+      if (!vendor) throw new Error('Vendor not found');
+      return vendor;
     }),
 
   createVendor: protectedProcedure
@@ -231,23 +369,24 @@ export const catalogueRouter = router({
       gstNumber: z.string().optional(),
       paymentTerms: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
-      return catalogueFetch('/api/v1/vendors', {
-        method: 'POST',
-        body: JSON.stringify({
+    .mutation(async ({ ctx, input }) => {
+      const [vendor] = await ctx.db
+        .insert(vendors)
+        .values({
           name: input.name,
           code: input.code,
           description: input.description,
           website: input.website,
-          contact_email: input.contactEmail,
-          contact_phone: input.contactPhone,
+          contactEmail: input.contactEmail,
+          contactPhone: input.contactPhone,
           address: input.address,
           city: input.city,
           state: input.state,
-          gst_number: input.gstNumber,
-          payment_terms: input.paymentTerms,
-        }),
-      });
+          gstNumber: input.gstNumber,
+          paymentTerms: input.paymentTerms,
+        })
+        .returning();
+      return vendor;
     }),
 
   updateVendor: protectedProcedure
@@ -259,17 +398,25 @@ export const catalogueRouter = router({
       contactEmail: z.string().optional(),
       city: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
-      const { id, ...body } = input;
-      return catalogueFetch(`/api/v1/vendors/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(body),
-      });
+    .mutation(async ({ ctx, input }) => {
+      const { id, ...data } = input;
+      const [updated] = await ctx.db
+        .update(vendors)
+        .set(data)
+        .where(eq(vendors.id, id))
+        .returning();
+      if (!updated) throw new Error('Vendor not found');
+      return updated;
     }),
 
   deleteVendor: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .mutation(async ({ input }) => {
-      return catalogueFetch(`/api/v1/vendors/${input.id}`, { method: 'DELETE' });
+    .mutation(async ({ ctx, input }) => {
+      const [deleted] = await ctx.db
+        .delete(vendors)
+        .where(eq(vendors.id, input.id))
+        .returning();
+      if (!deleted) throw new Error('Vendor not found');
+      return { success: true, id: input.id };
     }),
 });

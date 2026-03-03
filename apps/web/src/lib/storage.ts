@@ -1,18 +1,10 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
+import { readFile, writeFile, unlink, mkdir } from 'fs/promises';
+import { join, dirname } from 'path';
+import { existsSync } from 'fs';
 
-const BUCKET = process.env.MINIO_BUCKET || 'openlintel';
-
-const s3 = new S3Client({
-  endpoint: process.env.MINIO_ENDPOINT || 'http://localhost:9000',
-  region: 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.MINIO_ACCESS_KEY || 'minioadmin',
-    secretAccessKey: process.env.MINIO_SECRET_KEY || 'minioadmin',
-  },
-  forcePathStyle: true, // required for MinIO
-});
+// Resolve uploads directory relative to monorepo root (two levels up from apps/web)
+const UPLOADS_DIR = join(process.cwd(), '..', '..', 'uploads');
 
 export function generateStorageKey(filename: string): string {
   const ext = filename.includes('.') ? '.' + filename.split('.').pop() : '';
@@ -20,29 +12,17 @@ export function generateStorageKey(filename: string): string {
   return `${date}/${randomUUID()}${ext}`;
 }
 
-export async function saveFile(buffer: Buffer, key: string, contentType?: string): Promise<void> {
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      Body: buffer,
-      ContentType: contentType,
-    }),
-  );
+export async function saveFile(buffer: Buffer, key: string, _contentType?: string): Promise<void> {
+  const filePath = join(UPLOADS_DIR, key);
+  const dir = dirname(filePath);
+  await mkdir(dir, { recursive: true });
+  await writeFile(filePath, buffer);
 }
 
 export async function getFile(key: string): Promise<Buffer | null> {
   try {
-    const response = await s3.send(
-      new GetObjectCommand({ Bucket: BUCKET, Key: key }),
-    );
-    const stream = response.Body;
-    if (!stream) return null;
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of stream as AsyncIterable<Uint8Array>) {
-      chunks.push(chunk);
-    }
-    return Buffer.concat(chunks);
+    const filePath = join(UPLOADS_DIR, key);
+    return await readFile(filePath);
   } catch {
     return null;
   }
@@ -50,15 +30,14 @@ export async function getFile(key: string): Promise<Buffer | null> {
 
 export async function deleteFile(key: string): Promise<void> {
   try {
-    await s3.send(
-      new DeleteObjectCommand({ Bucket: BUCKET, Key: key }),
-    );
+    const filePath = join(UPLOADS_DIR, key);
+    await unlink(filePath);
   } catch {
     // File may not exist, ignore
   }
 }
 
-export async function getPresignedUrl(key: string, expiresIn = 3600): Promise<string> {
-  const command = new GetObjectCommand({ Bucket: BUCKET, Key: key });
-  return getSignedUrl(s3, command, { expiresIn });
+export async function getPresignedUrl(key: string, _expiresIn = 3600): Promise<string> {
+  // For local storage, return an internal API route that serves the file
+  return `/api/uploads/${encodeURIComponent(key)}`;
 }
