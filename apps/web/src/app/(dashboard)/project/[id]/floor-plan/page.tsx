@@ -2,7 +2,11 @@
 
 import { use, useState, useEffect } from 'react';
 import { trpc } from '@/lib/trpc/client';
-import { FloorPlanUpload } from '@/components/floor-plan-upload';
+import dynamic from 'next/dynamic';
+
+const FloorPlanUpload = dynamic(() => import('@/components/floor-plan-upload').then(m => m.FloorPlanUpload), {
+  loading: () => <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">Loading uploader...</div>,
+});
 import {
   Button,
   Card,

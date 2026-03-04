@@ -3,6 +3,7 @@
 import { use, useState, useCallback, useRef, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { trpc } from '@/lib/trpc/client';
 import {
   Button,
@@ -32,20 +33,26 @@ import {
   EyeOff,
 } from 'lucide-react';
 
-import { Toolbar, type EditorTool, type ViewPreset } from '@/components/editor-3d/toolbar';
-import { MaterialPanel, type MaterialPreset } from '@/components/editor-3d/material-panel';
-import { LightingPanel, getDefaultLightingConfig, type LightingConfig } from '@/components/editor-3d/lighting-panel';
-import { SnapGridControls } from '@/components/editor-3d/snap-grid';
-import { CollabPresence } from '@/components/editor-3d/collab-presence';
-import { createCollabSession, type CollabSession } from '@/lib/collaboration';
+import { type EditorTool, type ViewPreset } from '@/components/editor-3d/toolbar';
+import { type MaterialPreset } from '@/components/editor-3d/material-panel';
+import { getDefaultLightingConfig, type LightingConfig } from '@/components/editor-3d/lighting-panel';
+import { type GridSizeValue } from '@/lib/snap-engine';
+import { DEFAULT_ROOM } from '@/lib/room-builder';
 import {
   getCatalogueByCategory,
   createPlacedFurniture,
+  generateFurnitureId,
+  FURNITURE_CATALOGUE,
   type PlacedFurniture,
   type FurniturePrimitive,
 } from '@/lib/gltf-loader';
-import { type GridSizeValue } from '@/lib/snap-engine';
-import { DEFAULT_ROOM } from '@/lib/room-builder';
+import { createCollabSession, type CollabSession } from '@/lib/collaboration';
+
+const Toolbar = dynamic(() => import('@/components/editor-3d/toolbar').then(m => m.Toolbar));
+const MaterialPanel = dynamic(() => import('@/components/editor-3d/material-panel').then(m => m.MaterialPanel));
+const LightingPanel = dynamic(() => import('@/components/editor-3d/lighting-panel').then(m => m.LightingPanel));
+const SnapGridControls = dynamic(() => import('@/components/editor-3d/snap-grid').then(m => m.SnapGridControls));
+const CollabPresence = dynamic(() => import('@/components/editor-3d/collab-presence').then(m => m.CollabPresence));
 
 // Dynamically import the 3D viewport with SSR disabled.
 // @react-three/fiber accesses removed React 19 internals at module load time,
@@ -69,8 +76,19 @@ interface HistoryEntry {
 export default function EditorPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const containerRef = useRef<HTMLDivElement>(null);
+  const searchParams = useSearchParams();
+  const variantId = searchParams.get('variant');
 
   const { data: project, isLoading } = trpc.project.byId.useQuery({ id });
+
+  // Fetch design variant if passed via query param
+  const { data: designVariant } = trpc.designVariant.listByProject.useQuery(
+    { projectId: id },
+    { enabled: !!variantId },
+  );
+
+  // Track whether we've already loaded design furniture (to avoid re-loading on every render)
+  const [designLoaded, setDesignLoaded] = useState(false);
 
   // Room selection
   const [selectedRoomId, setSelectedRoomId] = useState<string>('');
@@ -168,6 +186,117 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       setSelectedRoomId((project as any).rooms[0].id);
     }
   }, [project, selectedRoomId]);
+
+  // Load furniture from design variant spec into the 3D scene
+  useEffect(() => {
+    if (!variantId || !designVariant || designLoaded || !project) return;
+    const variant = (designVariant as any[]).find((v: any) => v.id === variantId);
+    if (!variant?.specJson?.furniture) return;
+
+    // Select the variant's room
+    if (variant.roomId) {
+      setSelectedRoomId(variant.roomId);
+    }
+
+    const spec = variant.specJson as {
+      furniture: Array<{
+        name: string;
+        dimensions?: string;
+        position?: string;
+        material?: string;
+      }>;
+    };
+
+    const roomL = ((project as any).rooms?.find((r: any) => r.id === variant.roomId)?.lengthMm ?? 4000) / 1000;
+    const roomW = ((project as any).rooms?.find((r: any) => r.id === variant.roomId)?.widthMm ?? 3500) / 1000;
+
+    const placedItems: PlacedFurniture[] = spec.furniture.map((item, i) => {
+      // Parse dimensions "WxDxH" (values could be in mm)
+      let sizeW = 0.6, sizeH = 0.6, sizeD = 0.6;
+      if (item.dimensions) {
+        const m = item.dimensions.match(/(\d+)\s*[x×X]\s*(\d+)(?:\s*[x×X]\s*(\d+))?/);
+        if (m) {
+          const raw1 = parseInt(m[1], 10);
+          const raw2 = parseInt(m[2], 10);
+          const raw3 = m[3] ? parseInt(m[3], 10) : raw2;
+          // If values > 10, assume mm → convert to metres
+          sizeW = raw1 > 10 ? raw1 / 1000 : raw1;
+          sizeD = raw2 > 10 ? raw2 / 1000 : raw2;
+          sizeH = raw3 > 10 ? raw3 / 1000 : raw3;
+        }
+      } else {
+        // Try to match from catalogue defaults
+        const nameLower = item.name.toLowerCase();
+        const catalogueMatch = FURNITURE_CATALOGUE.find(c =>
+          nameLower.includes(c.name.toLowerCase().split(' ')[0].toLowerCase()),
+        );
+        if (catalogueMatch) {
+          [sizeW, sizeH, sizeD] = catalogueMatch.size;
+        }
+      }
+
+      // Resolve position from text description to 3D coordinates
+      const pos = item.position?.toLowerCase() ?? '';
+      let px = 0, pz = 0;
+      const margin = 0.3; // metres from wall
+
+      if (pos.includes('center') || pos.includes('middle')) {
+        px = 0; pz = 0;
+      } else if (pos.includes('north') || pos.includes('back') || pos.includes('far')) {
+        pz = -(roomW / 2 - sizeD / 2 - margin);
+        px = pos.includes('east') || pos.includes('right')
+          ? roomL / 2 - sizeW / 2 - margin
+          : pos.includes('west') || pos.includes('left')
+            ? -(roomL / 2 - sizeW / 2 - margin)
+            : 0;
+      } else if (pos.includes('south') || pos.includes('front') || pos.includes('entrance') || pos.includes('door')) {
+        pz = roomW / 2 - sizeD / 2 - margin;
+        px = pos.includes('east') || pos.includes('right')
+          ? roomL / 2 - sizeW / 2 - margin
+          : pos.includes('west') || pos.includes('left')
+            ? -(roomL / 2 - sizeW / 2 - margin)
+            : 0;
+      } else if (pos.includes('left') || pos.includes('west')) {
+        px = -(roomL / 2 - sizeW / 2 - margin);
+        pz = 0;
+      } else if (pos.includes('right') || pos.includes('east')) {
+        px = roomL / 2 - sizeW / 2 - margin;
+        pz = 0;
+      } else if (pos.includes('corner')) {
+        px = -(roomL / 2 - sizeW / 2 - margin);
+        pz = -(roomW / 2 - sizeD / 2 - margin);
+      } else {
+        // Distribute around the room
+        const angle = (i / spec.furniture.length) * Math.PI * 2;
+        px = Math.cos(angle) * (roomL / 3);
+        pz = Math.sin(angle) * (roomW / 3);
+      }
+
+      // Find matching catalogue item for color
+      const nameLower = item.name.toLowerCase();
+      const catalogueMatch = FURNITURE_CATALOGUE.find(c =>
+        nameLower.includes(c.name.toLowerCase().split(' ')[0].toLowerCase()),
+      );
+
+      return {
+        id: generateFurnitureId(),
+        name: item.name,
+        category: catalogueMatch?.category ?? 'Decor',
+        size: [sizeW, sizeH, sizeD] as [number, number, number],
+        color: catalogueMatch?.color ?? '#8B7355',
+        position: [px, sizeH / 2, pz] as [number, number, number],
+        rotation: [0, 0, 0] as [number, number, number],
+        scale: [1, 1, 1] as [number, number, number],
+      };
+    });
+
+    if (placedItems.length > 0) {
+      setFurniture(placedItems);
+      setHistory([{ furniture: JSON.parse(JSON.stringify(placedItems)) }]);
+      setHistoryIndex(0);
+      setDesignLoaded(true);
+    }
+  }, [variantId, designVariant, designLoaded, project]);
 
   // Get selected room
   const selectedRoom = (project as any)?.rooms?.find((r: any) => r.id === selectedRoomId);

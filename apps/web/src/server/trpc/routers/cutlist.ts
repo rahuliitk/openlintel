@@ -174,6 +174,165 @@ function generateHardwareSchedule(roomType: string, panels: PanelItem[]): Hardwa
 }
 
 // ---------------------------------------------------------------------------
+// Helpers — furniture unit inference & nesting sheet builder
+// ---------------------------------------------------------------------------
+
+function inferFurnitureUnit(panelName: string): string {
+  const lower = panelName.toLowerCase();
+  if (lower.includes('base cabinet')) return 'Base Cabinet';
+  if (lower.includes('wall cabinet')) return 'Wall Cabinet';
+  if (lower.includes('tall unit')) return 'Tall Unit';
+  if (lower.includes('countertop')) return 'Countertop';
+  if (lower.includes('drawer')) return 'Drawer Unit';
+  if (lower.includes('wardrobe')) return 'Wardrobe';
+  if (lower.includes('headboard')) return 'Bed';
+  if (lower.includes('side table')) return 'Side Table';
+  if (lower.includes('dresser')) return 'Dresser';
+  if (lower.includes('tv unit')) return 'TV Unit';
+  if (lower.includes('bookshelf')) return 'Bookshelf';
+  if (lower.includes('display cabinet')) return 'Display Cabinet';
+  if (lower.includes('vanity')) return 'Vanity';
+  if (lower.includes('mirror cabinet')) return 'Mirror Cabinet';
+  if (lower.includes('storage cabinet')) return 'Storage Cabinet';
+  return 'General';
+}
+
+interface TransformedPanel {
+  id: string;
+  partName: string;
+  furnitureUnit: string;
+  length: number;
+  width: number;
+  thickness: number;
+  material: string;
+  grain: 'horizontal' | 'vertical' | 'none';
+  edgeBanding: { top: boolean; bottom: boolean; left: boolean; right: boolean };
+  quantity: number;
+}
+
+function buildNestingSheets(
+  panels: TransformedPanel[],
+  nestingCalc: { totalSheets: number; wastePercent: number },
+  rawPanels: PanelItem[],
+) {
+  // Determine primary material and thickness
+  const primaryMaterial = rawPanels.length > 0 ? rawPanels[0].material : 'Plywood';
+  const primaryThickness = rawPanels.length > 0 ? rawPanels[0].thickness : STANDARD_THICKNESS;
+
+  // Expand panels by quantity for placement
+  const expanded: TransformedPanel[] = [];
+  for (const panel of panels) {
+    for (let i = 0; i < panel.quantity; i++) {
+      expanded.push(panel);
+    }
+  }
+
+  // Simple first-fit-decreasing shelf packing
+  const sheets: Array<{
+    sheetNumber: number;
+    sheetLength: number;
+    sheetWidth: number;
+    material: string;
+    thickness: number;
+    panels: Array<{ id: string; partName: string; furnitureUnit: string; x: number; y: number; length: number; width: number; rotated: boolean }>;
+    wastePercent: number;
+  }> = [];
+
+  // Sort expanded panels by area descending for better packing
+  const sorted = [...expanded].sort((a, b) => (b.length * b.width) - (a.length * a.width));
+
+  // Simple row-based packing per sheet
+  let currentSheet: typeof sheets[0] | null = null;
+  let cursorX = 0;
+  let cursorY = 0;
+  let rowHeight = 0;
+
+  for (const panel of sorted) {
+    let pLength = panel.length;
+    let pWidth = panel.width;
+    let rotated = false;
+
+    // Try to fit, rotate if needed
+    if (pLength > SHEET_LENGTH || pWidth > SHEET_WIDTH) {
+      // Try rotating
+      const tmp = pLength;
+      pLength = pWidth;
+      pWidth = tmp;
+      rotated = true;
+    }
+
+    if (!currentSheet || (cursorX + pLength > SHEET_LENGTH && cursorY + rowHeight + pWidth > SHEET_WIDTH)) {
+      // Start a new sheet
+      if (currentSheet) sheets.push(currentSheet);
+      currentSheet = {
+        sheetNumber: sheets.length + 1,
+        sheetLength: SHEET_LENGTH,
+        sheetWidth: SHEET_WIDTH,
+        material: panel.material || primaryMaterial,
+        thickness: panel.thickness || primaryThickness,
+        panels: [],
+        wastePercent: 0,
+      };
+      cursorX = 0;
+      cursorY = 0;
+      rowHeight = 0;
+    }
+
+    // Check if panel fits in current row
+    if (cursorX + pLength > SHEET_LENGTH) {
+      // Move to next row
+      cursorY += rowHeight;
+      cursorX = 0;
+      rowHeight = 0;
+
+      if (cursorY + pWidth > SHEET_WIDTH) {
+        // Sheet is full, start new one
+        sheets.push(currentSheet);
+        currentSheet = {
+          sheetNumber: sheets.length + 1,
+          sheetLength: SHEET_LENGTH,
+          sheetWidth: SHEET_WIDTH,
+          material: panel.material || primaryMaterial,
+          thickness: panel.thickness || primaryThickness,
+          panels: [],
+          wastePercent: 0,
+        };
+        cursorX = 0;
+        cursorY = 0;
+        rowHeight = 0;
+      }
+    }
+
+    currentSheet.panels.push({
+      id: crypto.randomUUID(),
+      partName: panel.partName,
+      furnitureUnit: panel.furnitureUnit,
+      x: cursorX,
+      y: cursorY,
+      length: pLength,
+      width: pWidth,
+      rotated,
+    });
+
+    cursorX += pLength;
+    if (pWidth > rowHeight) rowHeight = pWidth;
+  }
+
+  if (currentSheet && currentSheet.panels.length > 0) {
+    sheets.push(currentSheet);
+  }
+
+  // Calculate waste percent per sheet
+  const sheetArea = SHEET_LENGTH * SHEET_WIDTH;
+  for (const sheet of sheets) {
+    const usedArea = sheet.panels.reduce((sum, p) => sum + p.length * p.width, 0);
+    sheet.wastePercent = Math.round(((sheetArea - usedArea) / sheetArea) * 10000) / 100;
+  }
+
+  return sheets;
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -212,7 +371,7 @@ export const cutlistRouter = router({
       });
       if (!project) throw new Error('Project not found');
 
-      return project.rooms.flatMap((room) =>
+      const results = project.rooms.flatMap((room) =>
         room.designVariants.flatMap((variant) =>
           variant.cutlistResults.map((cutlist) => ({
             ...cutlist,
@@ -221,6 +380,7 @@ export const cutlistRouter = router({
           })),
         ),
       );
+      return results.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }),
 
   generate: protectedProcedure
@@ -266,7 +426,7 @@ export const cutlistRouter = router({
         const heightMm = variant.room.heightMm ?? 2700;
 
         // Generate panels
-        const panels = generatePanelsForRoom(
+        const rawPanels = generatePanelsForRoom(
           roomType,
           lengthMm,
           widthMm,
@@ -275,11 +435,41 @@ export const cutlistRouter = router({
           variant.budgetTier,
         );
 
-        // Calculate nesting on 8x4 ft sheets
-        const nestingData = calculateNesting(panels);
+        // Transform panels to match CutListPanel frontend interface
+        const panels = rawPanels.map((p) => ({
+          id: crypto.randomUUID(),
+          partName: p.name,
+          furnitureUnit: inferFurnitureUnit(p.name),
+          length: p.lengthMm,
+          width: p.widthMm,
+          thickness: p.thickness,
+          material: p.material,
+          grain: p.grainDirection === 'horizontal' || p.grainDirection === 'vertical' ? p.grainDirection : 'none' as const,
+          edgeBanding: {
+            top: p.edgeBanding.includes('top'),
+            bottom: p.edgeBanding.includes('bottom'),
+            left: p.edgeBanding.includes('left'),
+            right: p.edgeBanding.includes('right'),
+          },
+          quantity: p.quantity,
+        }));
 
-        // Hardware schedule
-        const hardwareSchedule = generateHardwareSchedule(roomType, panels);
+        // Calculate nesting on 8x4 ft sheets
+        const nestingCalc = calculateNesting(rawPanels);
+
+        // Build NestingSheet[] with placed panels for the viewer
+        const nestingResult = buildNestingSheets(panels, nestingCalc, rawPanels);
+
+        // Hardware schedule — transform to match HardwareItem frontend interface
+        const rawHardware = generateHardwareSchedule(roomType, rawPanels);
+        const hardware = rawHardware.map((h) => ({
+          id: crypto.randomUUID(),
+          name: h.name,
+          specification: h.specification,
+          quantity: h.quantity,
+          unit: h.unit,
+          furnitureUnit: 'General',
+        }));
 
         // Persist cutlist result
         const [cutlist] = await ctx.db
@@ -288,10 +478,10 @@ export const cutlistRouter = router({
             designVariantId: input.designVariantId,
             jobId: job.id,
             panels,
-            hardware: hardwareSchedule,
-            nestingResult: nestingData,
-            totalSheets: nestingData.totalSheets,
-            wastePercent: nestingData.wastePercent,
+            hardware,
+            nestingResult,
+            totalSheets: nestingCalc.totalSheets,
+            wastePercent: nestingCalc.wastePercent,
           })
           .returning();
         if (!cutlist) throw new Error('Failed to create cutlist result');
@@ -306,9 +496,9 @@ export const cutlistRouter = router({
             outputJson: {
               cutlistResultId: cutlist.id,
               totalPanels: panels.reduce((s, p) => s + p.quantity, 0),
-              totalSheets: nestingData.totalSheets,
-              wastePercent: nestingData.wastePercent,
-              hardwareItems: hardwareSchedule.length,
+              totalSheets: nestingCalc.totalSheets,
+              wastePercent: nestingCalc.wastePercent,
+              hardwareItems: hardware.length,
             },
           })
           .where(eq(jobs.id, job.id))
@@ -331,6 +521,20 @@ export const cutlistRouter = router({
 
         return failedJob;
       }
+    }),
+
+  delete: protectedProcedure
+    .input(z.object({ cutlistResultId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const cutlist = await ctx.db.query.cutlistResults.findFirst({
+        where: eq(cutlistResults.id, input.cutlistResultId),
+        with: { designVariant: { with: { room: { with: { project: true } } } } },
+      });
+      if (!cutlist || (cutlist.designVariant as any).room.project.userId !== ctx.userId) {
+        throw new Error('Cut list result not found');
+      }
+      await ctx.db.delete(cutlistResults).where(eq(cutlistResults.id, input.cutlistResultId));
+      return { success: true };
     }),
 
   jobStatus: protectedProcedure

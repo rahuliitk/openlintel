@@ -37,6 +37,7 @@ import {
   RefreshCw,
   Loader2,
   Truck,
+  Trash2,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -47,6 +48,7 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
   const [generateOpen, setGenerateOpen] = useState(false);
   const [selectedVariant, setSelectedVariant] = useState('');
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [selectedBomId, setSelectedBomId] = useState<string | null>(null);
 
   const { data: variants = [], isLoading: loadingVariants } =
     trpc.designVariant.listByProject.useQuery({ projectId });
@@ -63,6 +65,21 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
       toast({ title: 'Failed to start BOM generation', description: err.message });
     },
   });
+
+  const deleteBom = trpc.bom.delete.useMutation({
+    onSuccess: () => {
+      utils.bom.listByProject.invalidate({ projectId });
+      setSelectedBomId(null);
+      toast({ title: 'BOM deleted' });
+    },
+    onError: (err) => {
+      toast({ title: 'Failed to delete BOM', description: err.message });
+    },
+  });
+
+  const handleDelete = (bomId: string) => {
+    deleteBom.mutate({ bomResultId: bomId });
+  };
 
   const { data: jobStatus } = trpc.bom.jobStatus.useQuery(
     { jobId: activeJobId! },
@@ -92,10 +109,12 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
     generateBom.mutate({ designVariantId: selectedVariant });
   };
 
-  // Parse BOM items from the most recent result
-  const latestBom = bomResults.length > 0 ? bomResults[0] : null;
-  const bomItems: BOMItem[] = latestBom?.items
-    ? (latestBom.items as BOMItem[])
+  // Parse BOM items from the selected or most recent result
+  const activeBom = selectedBomId
+    ? bomResults.find((b: any) => b.id === selectedBomId) || bomResults[0]
+    : bomResults.length > 0 ? bomResults[0] : null;
+  const bomItems: BOMItem[] = activeBom?.items
+    ? (activeBom.items as BOMItem[])
     : [];
 
   const categoryData = bomItems.reduce<Record<string, number>>((acc, item) => {
@@ -108,7 +127,7 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
     total,
   }));
 
-  const currency = latestBom?.currency || 'USD';
+  const currency = activeBom?.currency || 'USD';
 
   const handleExport = (format: 'csv' | 'excel' | 'pdf') => {
     if (bomItems.length === 0) {
@@ -137,9 +156,9 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
       a.click();
       URL.revokeObjectURL(url);
       toast({ title: 'CSV exported' });
-    } else if (latestBom) {
+    } else if (activeBom) {
       const exportFormat = format === 'excel' ? 'xlsx' : 'pdf';
-      window.open(`/api/bom/export/${latestBom.id}?format=${exportFormat}`, '_blank');
+      window.open(`/api/bom/export/${activeBom.id}?format=${exportFormat}`, '_blank');
       toast({ title: `${format.toUpperCase()} export started` });
     }
   };
@@ -283,24 +302,55 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
 
           <Separator />
 
-          {/* BOM metadata */}
-          {latestBom && (
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <span>
-                Generated: {new Date(latestBom.createdAt).toLocaleDateString()}
-              </span>
-              {'variantName' in latestBom && (
-                <>
-                  <span className="h-1 w-1 rounded-full bg-muted-foreground" />
-                  <span>Variant: {(latestBom as { variantName: string }).variantName}</span>
-                </>
-              )}
-              {'roomName' in latestBom && (
-                <>
-                  <span className="h-1 w-1 rounded-full bg-muted-foreground" />
-                  <span>Room: {(latestBom as { roomName: string }).roomName}</span>
-                </>
-              )}
+          {/* BOM selector and metadata */}
+          {activeBom && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                <span>
+                  Generated: {new Date(activeBom.createdAt).toLocaleDateString()}
+                </span>
+                {'variantName' in activeBom && (
+                  <>
+                    <span className="h-1 w-1 rounded-full bg-muted-foreground" />
+                    <span>Variant: {(activeBom as { variantName: string }).variantName}</span>
+                  </>
+                )}
+                {'roomName' in activeBom && (
+                  <>
+                    <span className="h-1 w-1 rounded-full bg-muted-foreground" />
+                    <span>Room: {(activeBom as { roomName: string }).roomName}</span>
+                  </>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {bomResults.length > 1 && (
+                  <Select
+                    value={activeBom.id}
+                    onValueChange={(val) => setSelectedBomId(val)}
+                  >
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select BOM" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {bomResults.map((bom: any) => (
+                        <SelectItem key={bom.id} value={bom.id}>
+                          {bom.variantName || 'Variant'} — {new Date(bom.createdAt).toLocaleDateString()}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  disabled={deleteBom.isPending}
+                  onClick={() => handleDelete(activeBom.id)}
+                >
+                  <Trash2 className="mr-1 h-4 w-4" />
+                  Delete
+                </Button>
+              </div>
             </div>
           )}
 

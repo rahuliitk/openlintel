@@ -107,6 +107,9 @@ temp/
 *.tmp
 *.bak
 
+# User uploads (local storage)
+uploads/
+
 # Large media (should use Git LFS)
 *.psd
 *.ai

@@ -44,13 +44,15 @@ interface NestingViewerProps {
   sheets: NestingSheet[];
 }
 
-export function NestingViewer({ sheets }: NestingViewerProps) {
+export function NestingViewer({ sheets: rawSheets }: NestingViewerProps) {
+  const sheets = Array.isArray(rawSheets) ? rawSheets : [];
   const [currentSheet, setCurrentSheet] = useState(0);
 
   const unitColorMap = useMemo(() => {
     const map: Record<string, string> = {};
     let idx = 0;
     for (const sheet of sheets) {
+      if (!sheet?.panels) continue;
       for (const panel of sheet.panels) {
         if (!(panel.furnitureUnit in map)) {
           map[panel.furnitureUnit] = UNIT_COLORS[idx % UNIT_COLORS.length];
