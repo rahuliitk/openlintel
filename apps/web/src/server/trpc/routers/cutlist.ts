@@ -1,201 +1,16 @@
 import { z } from 'zod';
 import { cutlistResults, designVariants, rooms, projects, jobs, eq, and } from '@openlintel/db';
 import { router, protectedProcedure } from '../init';
+import OpenAI from 'openai';
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ---------------------------------------------------------------------------
-// Helpers — panel generation by room type
+// Helpers
 // ---------------------------------------------------------------------------
-
-interface PanelItem {
-  name: string;
-  material: string;
-  lengthMm: number;
-  widthMm: number;
-  thickness: number;
-  grainDirection: 'horizontal' | 'vertical';
-  edgeBanding: ('top' | 'bottom' | 'left' | 'right')[];
-  quantity: number;
-}
-
-interface HardwareItem {
-  name: string;
-  specification: string;
-  quantity: number;
-  unit: string;
-}
 
 const SHEET_LENGTH = 2440; // 8 ft in mm
 const SHEET_WIDTH = 1220; // 4 ft in mm
-const STANDARD_THICKNESS = 18;
-
-function generatePanelsForRoom(
-  roomType: string,
-  lengthMm: number,
-  widthMm: number,
-  _heightMm: number,
-  style: string,
-  budgetTier: string,
-): PanelItem[] {
-  const material =
-    budgetTier === 'premium'
-      ? 'Marine Plywood BWP'
-      : budgetTier === 'mid'
-        ? 'MR Grade Plywood'
-        : 'Commercial Plywood';
-
-  switch (roomType) {
-    case 'kitchen':
-      return [
-        { name: 'Base Cabinet Side Panel', material, lengthMm: 720, widthMm: 560, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'left', 'right'], quantity: 6 },
-        { name: 'Base Cabinet Shelf', material, lengthMm: 560, widthMm: 540, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 6 },
-        { name: 'Wall Cabinet Side Panel', material, lengthMm: 720, widthMm: 300, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'bottom', 'left', 'right'], quantity: 6 },
-        { name: 'Wall Cabinet Shelf', material, lengthMm: 560, widthMm: 280, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 6 },
-        { name: 'Wall Cabinet Top/Bottom', material, lengthMm: 560, widthMm: 300, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 12 },
-        { name: 'Base Cabinet Bottom', material, lengthMm: 560, widthMm: 560, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: [], quantity: 6 },
-        { name: 'Countertop Panel', material: 'Granite / Quartz', lengthMm: Math.min(lengthMm, 3000), widthMm: 600, thickness: 20, grainDirection: 'horizontal', edgeBanding: ['left', 'right', 'top'], quantity: 1 },
-        { name: 'Tall Unit Side Panel', material, lengthMm: 2100, widthMm: 560, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'left', 'right'], quantity: 2 },
-        { name: 'Tall Unit Shelf', material, lengthMm: 560, widthMm: 540, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 4 },
-        { name: 'Drawer Front', material, lengthMm: 560, widthMm: 180, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['top', 'bottom', 'left', 'right'], quantity: 6 },
-      ];
-
-    case 'bedroom':
-      return [
-        { name: 'Wardrobe Side Panel', material, lengthMm: 2100, widthMm: 600, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'left', 'right'], quantity: 3 },
-        { name: 'Wardrobe Shelf', material, lengthMm: 900, widthMm: 580, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 8 },
-        { name: 'Wardrobe Top/Bottom', material, lengthMm: 900, widthMm: 600, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 4 },
-        { name: 'Wardrobe Back Panel', material: 'MDF 6mm', lengthMm: 2100, widthMm: 900, thickness: 6, grainDirection: 'vertical', edgeBanding: [], quantity: 2 },
-        { name: 'Headboard Panel', material, lengthMm: 1800, widthMm: 1200, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['top', 'left', 'right'], quantity: 1 },
-        { name: 'Side Table Top', material, lengthMm: 500, widthMm: 400, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['top', 'bottom', 'left', 'right'], quantity: 2 },
-        { name: 'Side Table Side Panel', material, lengthMm: 500, widthMm: 400, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'left', 'right'], quantity: 4 },
-        { name: 'Dresser Side Panel', material, lengthMm: 800, widthMm: 500, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'left', 'right'], quantity: 2 },
-        { name: 'Dresser Drawer Front', material, lengthMm: 900, widthMm: 200, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['top', 'bottom', 'left', 'right'], quantity: 4 },
-      ];
-
-    case 'living_room':
-      return [
-        { name: 'TV Unit Side Panel', material, lengthMm: 500, widthMm: 400, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'left', 'right'], quantity: 2 },
-        { name: 'TV Unit Shelf', material, lengthMm: 1800, widthMm: 380, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left', 'top'], quantity: 3 },
-        { name: 'TV Unit Top/Bottom', material, lengthMm: 1800, widthMm: 400, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left', 'top'], quantity: 2 },
-        { name: 'TV Unit Back Panel', material: 'MDF 6mm', lengthMm: 1800, widthMm: 500, thickness: 6, grainDirection: 'horizontal', edgeBanding: [], quantity: 1 },
-        { name: 'Bookshelf Side Panel', material, lengthMm: 1800, widthMm: 300, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'left', 'right'], quantity: 2 },
-        { name: 'Bookshelf Shelf', material, lengthMm: 800, widthMm: 280, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 5 },
-        { name: 'Display Cabinet Door', material, lengthMm: 600, widthMm: 400, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'bottom', 'left', 'right'], quantity: 2 },
-      ];
-
-    case 'bathroom':
-      return [
-        { name: 'Vanity Side Panel', material: 'Marine Plywood BWP', lengthMm: 800, widthMm: 500, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'left', 'right'], quantity: 2 },
-        { name: 'Vanity Shelf', material: 'Marine Plywood BWP', lengthMm: 900, widthMm: 480, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 1 },
-        { name: 'Vanity Top', material: 'Marine Plywood BWP', lengthMm: 900, widthMm: 500, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['top', 'left', 'right'], quantity: 1 },
-        { name: 'Mirror Cabinet Side', material: 'Marine Plywood BWP', lengthMm: 600, widthMm: 150, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'bottom', 'left', 'right'], quantity: 2 },
-        { name: 'Mirror Cabinet Shelf', material: 'Marine Plywood BWP', lengthMm: 580, widthMm: 130, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 2 },
-      ];
-
-    default:
-      // Generic storage for any other room type
-      return [
-        { name: 'Storage Cabinet Side Panel', material, lengthMm: 1800, widthMm: 400, thickness: STANDARD_THICKNESS, grainDirection: 'vertical', edgeBanding: ['top', 'left', 'right'], quantity: 2 },
-        { name: 'Storage Cabinet Shelf', material, lengthMm: 800, widthMm: 380, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 4 },
-        { name: 'Storage Cabinet Top/Bottom', material, lengthMm: 800, widthMm: 400, thickness: STANDARD_THICKNESS, grainDirection: 'horizontal', edgeBanding: ['left'], quantity: 2 },
-        { name: 'Storage Cabinet Back Panel', material: 'MDF 6mm', lengthMm: 1800, widthMm: 800, thickness: 6, grainDirection: 'vertical', edgeBanding: [], quantity: 1 },
-      ];
-  }
-}
-
-function calculateNesting(panels: PanelItem[]) {
-  const sheetArea = SHEET_LENGTH * SHEET_WIDTH; // mm^2
-  let totalPanelArea = 0;
-
-  for (const panel of panels) {
-    totalPanelArea += panel.lengthMm * panel.widthMm * panel.quantity;
-  }
-
-  // Simple nesting: assume 85% utilisation efficiency for real-world nesting
-  const effectiveUsage = 0.85;
-  const totalSheets = Math.ceil(totalPanelArea / (sheetArea * effectiveUsage));
-  const usedArea = totalPanelArea;
-  const totalSheetArea = totalSheets * sheetArea;
-  const wastePercent = Math.round(((totalSheetArea - usedArea) / totalSheetArea) * 10000) / 100;
-
-  // Build per-sheet breakdown
-  const sheets: { sheetNumber: number; panels: string[]; utilisation: number }[] = [];
-  let remainingArea = totalPanelArea;
-  for (let i = 1; i <= totalSheets; i++) {
-    const areaOnSheet = Math.min(remainingArea, sheetArea * effectiveUsage);
-    remainingArea -= areaOnSheet;
-    sheets.push({
-      sheetNumber: i,
-      panels: panels.map((p) => `${p.name} (x${p.quantity})`).slice(0, 4), // summary
-      utilisation: Math.round((areaOnSheet / sheetArea) * 10000) / 100,
-    });
-  }
-
-  return { sheets, totalSheets, wastePercent, totalPanelAreaMm2: totalPanelArea, totalSheetAreaMm2: totalSheetArea };
-}
-
-function generateHardwareSchedule(roomType: string, panels: PanelItem[]): HardwareItem[] {
-  const cabinetCount = panels.filter((p) => p.name.toLowerCase().includes('side panel')).reduce((sum, p) => sum + p.quantity, 0) / 2;
-  const drawerCount = panels.filter((p) => p.name.toLowerCase().includes('drawer')).reduce((sum, p) => sum + p.quantity, 0);
-
-  const hardware: HardwareItem[] = [];
-
-  // Hinges — 2 per door, assume ~1 door per cabinet
-  const doorCount = Math.max(Math.round(cabinetCount), 2);
-  hardware.push({ name: 'Soft-close Hinge', specification: '110° full overlay', quantity: doorCount * 2, unit: 'nos' });
-
-  // Handles
-  hardware.push({ name: 'Cabinet Handle', specification: '128mm CC, SS finish', quantity: doorCount + drawerCount, unit: 'nos' });
-
-  // Drawer slides
-  if (drawerCount > 0) {
-    hardware.push({ name: 'Telescopic Drawer Slide', specification: '450mm full extension, 30kg', quantity: drawerCount, unit: 'pair' });
-  }
-
-  // Cam locks & dowels for flat-pack assembly
-  const jointCount = panels.reduce((sum, p) => sum + p.quantity, 0) * 2;
-  hardware.push({ name: 'Cam Lock + Dowel Set', specification: '15mm', quantity: jointCount, unit: 'set' });
-
-  // Shelf supports
-  const shelfCount = panels.filter((p) => p.name.toLowerCase().includes('shelf')).reduce((sum, p) => sum + p.quantity, 0);
-  hardware.push({ name: 'Shelf Support Pin', specification: '5mm nickel', quantity: shelfCount * 4, unit: 'nos' });
-
-  // Room-specific extras
-  if (roomType === 'kitchen') {
-    hardware.push({ name: 'Gas Spring Lift', specification: '100N for wall cabinets', quantity: Math.round(cabinetCount / 2), unit: 'pair' });
-    hardware.push({ name: 'Under-sink Drip Tray', specification: 'Aluminium 600mm', quantity: 1, unit: 'nos' });
-  }
-
-  if (roomType === 'bedroom') {
-    hardware.push({ name: 'Wardrobe Hanging Rod', specification: 'Oval 30x15mm chrome', quantity: 2, unit: 'nos' });
-    hardware.push({ name: 'Wardrobe Rod Bracket', specification: 'Flange bracket', quantity: 4, unit: 'nos' });
-  }
-
-  return hardware;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers — furniture unit inference & nesting sheet builder
-// ---------------------------------------------------------------------------
-
-function inferFurnitureUnit(panelName: string): string {
-  const lower = panelName.toLowerCase();
-  if (lower.includes('base cabinet')) return 'Base Cabinet';
-  if (lower.includes('wall cabinet')) return 'Wall Cabinet';
-  if (lower.includes('tall unit')) return 'Tall Unit';
-  if (lower.includes('countertop')) return 'Countertop';
-  if (lower.includes('drawer')) return 'Drawer Unit';
-  if (lower.includes('wardrobe')) return 'Wardrobe';
-  if (lower.includes('headboard')) return 'Bed';
-  if (lower.includes('side table')) return 'Side Table';
-  if (lower.includes('dresser')) return 'Dresser';
-  if (lower.includes('tv unit')) return 'TV Unit';
-  if (lower.includes('bookshelf')) return 'Bookshelf';
-  if (lower.includes('display cabinet')) return 'Display Cabinet';
-  if (lower.includes('vanity')) return 'Vanity';
-  if (lower.includes('mirror cabinet')) return 'Mirror Cabinet';
-  if (lower.includes('storage cabinet')) return 'Storage Cabinet';
-  return 'General';
-}
 
 interface TransformedPanel {
   id: string;
@@ -210,14 +25,24 @@ interface TransformedPanel {
   quantity: number;
 }
 
-function buildNestingSheets(
-  panels: TransformedPanel[],
-  nestingCalc: { totalSheets: number; wastePercent: number },
-  rawPanels: PanelItem[],
-) {
-  // Determine primary material and thickness
-  const primaryMaterial = rawPanels.length > 0 ? rawPanels[0].material : 'Plywood';
-  const primaryThickness = rawPanels.length > 0 ? rawPanels[0].thickness : STANDARD_THICKNESS;
+function calculateNesting(panels: TransformedPanel[]) {
+  const sheetArea = SHEET_LENGTH * SHEET_WIDTH;
+  let totalPanelArea = 0;
+  for (const panel of panels) {
+    totalPanelArea += panel.length * panel.width * panel.quantity;
+  }
+
+  const effectiveUsage = 0.85;
+  const totalSheets = Math.ceil(totalPanelArea / (sheetArea * effectiveUsage));
+  const totalSheetArea = totalSheets * sheetArea;
+  const wastePercent = Math.round(((totalSheetArea - totalPanelArea) / totalSheetArea) * 10000) / 100;
+
+  return { totalSheets, wastePercent };
+}
+
+function buildNestingSheets(panels: TransformedPanel[]) {
+  const primaryMaterial = panels.length > 0 ? panels[0]!.material : 'Plywood';
+  const primaryThickness = panels.length > 0 ? panels[0]!.thickness : 18;
 
   // Expand panels by quantity for placement
   const expanded: TransformedPanel[] = [];
@@ -227,7 +52,6 @@ function buildNestingSheets(
     }
   }
 
-  // Simple first-fit-decreasing shelf packing
   const sheets: Array<{
     sheetNumber: number;
     sheetLength: number;
@@ -238,10 +62,9 @@ function buildNestingSheets(
     wastePercent: number;
   }> = [];
 
-  // Sort expanded panels by area descending for better packing
+  // Sort by area descending for better packing
   const sorted = [...expanded].sort((a, b) => (b.length * b.width) - (a.length * a.width));
 
-  // Simple row-based packing per sheet
   let currentSheet: typeof sheets[0] | null = null;
   let cursorX = 0;
   let cursorY = 0;
@@ -252,9 +75,7 @@ function buildNestingSheets(
     let pWidth = panel.width;
     let rotated = false;
 
-    // Try to fit, rotate if needed
     if (pLength > SHEET_LENGTH || pWidth > SHEET_WIDTH) {
-      // Try rotating
       const tmp = pLength;
       pLength = pWidth;
       pWidth = tmp;
@@ -262,7 +83,6 @@ function buildNestingSheets(
     }
 
     if (!currentSheet || (cursorX + pLength > SHEET_LENGTH && cursorY + rowHeight + pWidth > SHEET_WIDTH)) {
-      // Start a new sheet
       if (currentSheet) sheets.push(currentSheet);
       currentSheet = {
         sheetNumber: sheets.length + 1,
@@ -278,15 +98,12 @@ function buildNestingSheets(
       rowHeight = 0;
     }
 
-    // Check if panel fits in current row
     if (cursorX + pLength > SHEET_LENGTH) {
-      // Move to next row
       cursorY += rowHeight;
       cursorX = 0;
       rowHeight = 0;
 
       if (cursorY + pWidth > SHEET_WIDTH) {
-        // Sheet is full, start new one
         sheets.push(currentSheet);
         currentSheet = {
           sheetNumber: sheets.length + 1,
@@ -322,7 +139,6 @@ function buildNestingSheets(
     sheets.push(currentSheet);
   }
 
-  // Calculate waste percent per sheet
   const sheetArea = SHEET_LENGTH * SHEET_WIDTH;
   for (const sheet of sheets) {
     const usedArea = sheet.panels.reduce((sum, p) => sum + p.length * p.width, 0);
@@ -398,7 +214,7 @@ export const cutlistRouter = router({
         throw new Error('Design variant not found');
       }
 
-      // Create job in pending state
+      // Create job
       const [job] = await ctx.db
         .insert(jobs)
         .values({
@@ -413,114 +229,182 @@ export const cutlistRouter = router({
         .returning();
       if (!job) throw new Error('Failed to create job');
 
-      // Mark running
-      await ctx.db
-        .update(jobs)
-        .set({ status: 'running', startedAt: new Date(), progress: 10 })
-        .where(eq(jobs.id, job.id));
+      // Run in background — return job immediately
+      const db = ctx.db;
+      const designVariantId = input.designVariantId;
+      const cutVariant = variant;
 
-      try {
-        const roomType = variant.room.type ?? 'other';
-        const lengthMm = variant.room.lengthMm ?? 3000;
-        const widthMm = variant.room.widthMm ?? 3000;
-        const heightMm = variant.room.heightMm ?? 2700;
+      void (async () => {
+        try {
+          await db
+            .update(jobs)
+            .set({ status: 'running', startedAt: new Date(), progress: 10 })
+            .where(eq(jobs.id, job.id));
 
-        // Generate panels
-        const rawPanels = generatePanelsForRoom(
-          roomType,
-          lengthMm,
-          widthMm,
-          heightMm,
-          variant.style,
-          variant.budgetTier,
-        );
+          const roomType = cutVariant.room.type ?? 'other';
+          const lengthMm = cutVariant.room.lengthMm ?? 3000;
+          const widthMm = cutVariant.room.widthMm ?? 3000;
+          const heightMm = cutVariant.room.heightMm ?? 2700;
+          const lengthM = lengthMm / 1000;
+          const widthM = widthMm / 1000;
 
-        // Transform panels to match CutListPanel frontend interface
-        const panels = rawPanels.map((p) => ({
-          id: crypto.randomUUID(),
-          partName: p.name,
-          furnitureUnit: inferFurnitureUnit(p.name),
-          length: p.lengthMm,
-          width: p.widthMm,
-          thickness: p.thickness,
-          material: p.material,
-          grain: p.grainDirection === 'horizontal' || p.grainDirection === 'vertical' ? p.grainDirection : 'none' as const,
-          edgeBanding: {
-            top: p.edgeBanding.includes('top'),
-            bottom: p.edgeBanding.includes('bottom'),
-            left: p.edgeBanding.includes('left'),
-            right: p.edgeBanding.includes('right'),
-          },
-          quantity: p.quantity,
-        }));
+          // Build context from design spec if available
+          const specJson = cutVariant.specJson as Record<string, unknown> | null;
+          let furnitureContext = '';
+          if (specJson?.furniture && Array.isArray(specJson.furniture)) {
+            furnitureContext = `\nFurniture from design spec:\n${JSON.stringify(specJson.furniture).slice(0, 1500)}`;
+          }
+          if (specJson?.materialSuggestions) {
+            furnitureContext += `\nMaterials: ${JSON.stringify(specJson.materialSuggestions).slice(0, 500)}`;
+          }
 
-        // Calculate nesting on 8x4 ft sheets
-        const nestingCalc = calculateNesting(rawPanels);
+          const prompt = `You are a furniture manufacturing expert. Generate a CNC-ready cut list for a ${roomType.replace(/_/g, ' ')} room.
 
-        // Build NestingSheet[] with placed panels for the viewer
-        const nestingResult = buildNestingSheets(panels, nestingCalc, rawPanels);
+Room: ${lengthM}m x ${widthM}m x ${heightMm / 1000}m
+Style: ${cutVariant.style}, Budget: ${cutVariant.budgetTier}
+${furnitureContext}
 
-        // Hardware schedule — transform to match HardwareItem frontend interface
-        const rawHardware = generateHardwareSchedule(roomType, rawPanels);
-        const hardware = rawHardware.map((h) => ({
-          id: crypto.randomUUID(),
-          name: h.name,
-          specification: h.specification,
-          quantity: h.quantity,
-          unit: h.unit,
-          furnitureUnit: 'General',
-        }));
+Break down ALL furniture into individual panel cut parts. For each furniture piece, list every structural panel (sides, top, bottom, shelves, back panel, doors, drawer fronts, drawer sides/bottom).
 
-        // Persist cutlist result
-        const [cutlist] = await ctx.db
-          .insert(cutlistResults)
-          .values({
-            designVariantId: input.designVariantId,
-            jobId: job.id,
-            panels,
-            hardware,
-            nestingResult,
-            totalSheets: nestingCalc.totalSheets,
-            wastePercent: nestingCalc.wastePercent,
-          })
-          .returning();
-        if (!cutlist) throw new Error('Failed to create cutlist result');
+Return compact JSON:
+{"panels":[{"name":"Part Name","furnitureUnit":"Furniture Name","material":"Plywood/MDF/etc","lengthMm":600,"widthMm":400,"thickness":18,"grainDirection":"horizontal","edgeBanding":["top","left"],"quantity":2}],"hardware":[{"name":"Hardware Name","specification":"details","quantity":4,"unit":"nos","furnitureUnit":"Furniture Name"}]}
 
-        // Mark completed
-        const [updatedJob] = await ctx.db
-          .update(jobs)
-          .set({
-            status: 'completed',
-            progress: 100,
-            completedAt: new Date(),
-            outputJson: {
-              cutlistResultId: cutlist.id,
-              totalPanels: panels.reduce((s, p) => s + p.quantity, 0),
+Rules:
+- All dimensions in mm. Standard sheet: 2440x1220mm. Common thicknesses: 6,12,18,25mm.
+- Include back panels (usually 6mm MDF), shelves, partitions, doors, drawer components.
+- Edge banding: array of sides needing banding (visible edges only).
+- Grain: "horizontal" for shelves/tops, "vertical" for side panels.
+- Hardware: hinges (2 per door), handles, drawer slides (pair per drawer), shelf pins (4 per shelf), cam locks, specific items for room type.
+- Budget tier affects material choice: economy=commercial plywood, standard=MR grade, premium=marine/BWP, luxury=solid wood/veneer.
+- Be thorough: a typical room has 15-40 unique panel parts and 8-15 hardware items.`;
+
+          await db.update(jobs).set({ progress: 20 }).where(eq(jobs.id, job.id));
+
+          const completion = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'system', content: 'You are a furniture manufacturing expert. Output only valid compact JSON. Be thorough — list every structural panel for every furniture piece.' },
+              { role: 'user', content: prompt },
+            ],
+            temperature: 0.3,
+            max_tokens: 16384,
+            response_format: { type: 'json_object' },
+          });
+
+          await db.update(jobs).set({ progress: 60 }).where(eq(jobs.id, job.id));
+
+          const finishReason = completion.choices[0]?.finish_reason;
+          const responseText = completion.choices[0]?.message?.content ?? '';
+          console.log('[Cutlist] OpenAI response length:', responseText.length, 'finish_reason:', finishReason);
+
+          if (finishReason === 'length') {
+            throw new Error('Cutlist response was truncated by token limit');
+          }
+          if (!responseText.trim()) {
+            throw new Error(`OpenAI returned empty response (finish_reason: ${finishReason})`);
+          }
+
+          let cutlistData: { panels: any[]; hardware: any[] };
+          try {
+            cutlistData = JSON.parse(responseText);
+          } catch {
+            const cleaned = responseText.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+            const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              cutlistData = JSON.parse(jsonMatch[0]);
+            } else {
+              console.error('[Cutlist] Failed to parse response:', responseText.slice(0, 500));
+              throw new Error('Failed to parse AI cutlist response as JSON');
+            }
+          }
+
+          if (!Array.isArray(cutlistData.panels) || cutlistData.panels.length === 0) {
+            throw new Error('AI returned no panel data');
+          }
+
+          await db.update(jobs).set({ progress: 75 }).where(eq(jobs.id, job.id));
+
+          // Transform AI panels to frontend format
+          const panels: TransformedPanel[] = cutlistData.panels.map((p: any) => ({
+            id: crypto.randomUUID(),
+            partName: p.name || p.partName || 'Unknown',
+            furnitureUnit: p.furnitureUnit || 'General',
+            length: p.lengthMm ?? p.length ?? 0,
+            width: p.widthMm ?? p.width ?? 0,
+            thickness: p.thickness ?? 18,
+            material: p.material || 'Plywood',
+            grain: (p.grainDirection === 'horizontal' || p.grainDirection === 'vertical') ? p.grainDirection : 'none' as const,
+            edgeBanding: Array.isArray(p.edgeBanding)
+              ? {
+                  top: p.edgeBanding.includes('top'),
+                  bottom: p.edgeBanding.includes('bottom'),
+                  left: p.edgeBanding.includes('left'),
+                  right: p.edgeBanding.includes('right'),
+                }
+              : { top: false, bottom: false, left: false, right: false },
+            quantity: p.quantity ?? 1,
+          }));
+
+          // Transform AI hardware to frontend format
+          const hardware = (cutlistData.hardware || []).map((h: any) => ({
+            id: crypto.randomUUID(),
+            name: h.name || 'Unknown',
+            specification: h.specification || h.spec || '',
+            quantity: h.quantity ?? 1,
+            unit: h.unit || 'nos',
+            furnitureUnit: h.furnitureUnit || 'General',
+          }));
+
+          // Calculate nesting and build sheet layouts
+          const nestingCalc = calculateNesting(panels);
+          const nestingResult = buildNestingSheets(panels);
+
+          await db.update(jobs).set({ progress: 90 }).where(eq(jobs.id, job.id));
+
+          // Persist cutlist result
+          const [cutlist] = await db
+            .insert(cutlistResults)
+            .values({
+              designVariantId,
+              jobId: job.id,
+              panels,
+              hardware,
+              nestingResult,
               totalSheets: nestingCalc.totalSheets,
               wastePercent: nestingCalc.wastePercent,
-              hardwareItems: hardware.length,
-            },
-          })
-          .where(eq(jobs.id, job.id))
-          .returning();
-        if (!updatedJob) throw new Error('Failed to update job');
+            })
+            .returning();
+          if (!cutlist) throw new Error('Failed to create cutlist result');
 
-        return updatedJob;
-      } catch (err) {
-        // Mark failed
-        const [failedJob] = await ctx.db
-          .update(jobs)
-          .set({
-            status: 'failed',
-            error: err instanceof Error ? err.message : 'Unknown error',
-            completedAt: new Date(),
-          })
-          .where(eq(jobs.id, job.id))
-          .returning();
-        if (!failedJob) throw new Error('Failed to update job');
+          await db
+            .update(jobs)
+            .set({
+              status: 'completed',
+              progress: 100,
+              completedAt: new Date(),
+              outputJson: {
+                cutlistResultId: cutlist.id,
+                totalPanels: panels.reduce((s, p) => s + p.quantity, 0),
+                uniqueParts: panels.length,
+                totalSheets: nestingCalc.totalSheets,
+                wastePercent: nestingCalc.wastePercent,
+                hardwareItems: hardware.length,
+              },
+            })
+            .where(eq(jobs.id, job.id));
 
-        return failedJob;
-      }
+          console.log('[Cutlist] Generation completed:', panels.length, 'parts,', hardware.length, 'hardware items');
+        } catch (err) {
+          console.error('[Cutlist Generation Error]', err);
+          const errorMessage = err instanceof Error ? err.message : 'Unknown error during cutlist generation';
+          await db
+            .update(jobs)
+            .set({ status: 'failed', error: errorMessage, completedAt: new Date() })
+            .where(eq(jobs.id, job.id));
+        }
+      })();
+
+      return job;
     }),
 
   delete: protectedProcedure

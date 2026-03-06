@@ -40,6 +40,8 @@ import { deliveryRouter } from './delivery';
 import { financialReportRouter } from './financialReport';
 import { vendorManagementRouter } from './vendorManagement';
 import { styleQuizRouter } from './styleQuiz';
+import { roomRedesignRouter } from './roomRedesign';
+import { floorPlanRenderRouter } from './floorPlanRender';
 
 export const appRouter = router({
   project: projectRouter,
@@ -83,6 +85,8 @@ export const appRouter = router({
   financialReport: financialReportRouter,
   vendorManagement: vendorManagementRouter,
   styleQuiz: styleQuizRouter,
+  roomRedesign: roomRedesignRouter,
+  floorPlanRender: floorPlanRenderRouter,
 });
 
 export type AppRouter = typeof appRouter;

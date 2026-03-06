@@ -28,17 +28,17 @@ import { GanttChart } from '@/components/gantt-chart';
 import { MilestoneTracker } from '@/components/milestone-tracker';
 
 const TRADE_SEQUENCE = [
+  { name: 'Site Preparation', key: 'general', durationDays: 3, isCritical: true },
   { name: 'Demolition', key: 'demolition', durationDays: 5, isCritical: true },
-  { name: 'Civil Work', key: 'civil', durationDays: 10, isCritical: true },
-  { name: 'Plumbing Rough-In', key: 'plumbing rough-in', durationDays: 7, isCritical: true },
-  { name: 'Electrical Rough-In', key: 'electrical rough-in', durationDays: 7, isCritical: false },
-  { name: 'False Ceiling', key: 'false ceiling', durationDays: 6, isCritical: false },
+  { name: 'Civil & Structural', key: 'civil', durationDays: 10, isCritical: true },
+  { name: 'Plumbing Rough-in', key: 'plumbing', durationDays: 7, isCritical: false },
+  { name: 'Electrical Rough-in', key: 'electrical', durationDays: 7, isCritical: false },
+  { name: 'HVAC Installation', key: 'hvac', durationDays: 6, isCritical: false },
+  { name: 'Carpentry & Woodwork', key: 'carpentry', durationDays: 14, isCritical: true },
   { name: 'Flooring', key: 'flooring', durationDays: 8, isCritical: true },
-  { name: 'Carpentry', key: 'carpentry', durationDays: 14, isCritical: true },
-  { name: 'Painting', key: 'painting', durationDays: 7, isCritical: false },
-  { name: 'MEP Fixtures', key: 'mep fixtures', durationDays: 5, isCritical: false },
-  { name: 'Soft Furnishing', key: 'soft furnishing', durationDays: 4, isCritical: false },
-  { name: 'Cleanup & Handover', key: 'cleanup', durationDays: 3, isCritical: true },
+  { name: 'Painting & Finishes', key: 'painting', durationDays: 7, isCritical: false },
+  { name: 'Fixture Installation', key: 'fixtures', durationDays: 5, isCritical: false },
+  { name: 'Final Cleanup & Inspection', key: 'cleanup', durationDays: 3, isCritical: true },
 ];
 
 export default function TimelinePage({ params }: { params: Promise<{ id: string }> }) {
@@ -85,20 +85,21 @@ export default function TimelinePage({ params }: { params: Promise<{ id: string 
     });
   }, []);
 
-  // Build Gantt tasks from actual schedule milestones
+  // Build Gantt tasks from actual schedule tasks JSON
   const scheduleTasks = useMemo(() => {
-    const ms_list = (currentSchedule as any)?.milestones as Record<string, unknown>[] | undefined;
-    if (!ms_list?.length) return [];
-    return ms_list.map((ms, idx) => ({
-      id: ms.id as string,
-      name: (ms.name as string) || `Milestone ${idx + 1}`,
-      trade: (ms.trade as string) || 'general',
-      startDate: ms.startDate ? new Date(ms.startDate as string).toISOString().split('T')[0]! : new Date().toISOString().split('T')[0]!,
-      endDate: ms.dueDate ? new Date(ms.dueDate as string).toISOString().split('T')[0]! : new Date().toISOString().split('T')[0]!,
-      progress: (ms.status as string) === 'completed' ? 100 : (ms.status as string) === 'in_progress' ? 50 : 0,
-      isCritical: (ms.isCritical as boolean) ?? false,
-      isMilestone: (ms.isMilestone as boolean) ?? false,
-      dependencies: idx > 0 ? [ms_list[idx - 1]!.id as string] : [],
+    const taskList = (currentSchedule as any)?.tasks as Record<string, unknown>[] | undefined;
+    if (!taskList?.length) return [];
+    const criticalPath = ((currentSchedule as any)?.criticalPath as string[]) ?? [];
+    return taskList.map((task) => ({
+      id: task.id as string,
+      name: (task.name as string) || 'Unknown Task',
+      trade: (task.trade as string) || 'general',
+      startDate: task.startDate ? new Date(task.startDate as string).toISOString().split('T')[0]! : new Date().toISOString().split('T')[0]!,
+      endDate: task.endDate ? new Date(task.endDate as string).toISOString().split('T')[0]! : new Date().toISOString().split('T')[0]!,
+      progress: (task.progress as number) ?? ((task.status as string) === 'completed' ? 100 : (task.status as string) === 'in_progress' ? 50 : 0),
+      isCritical: (task.isCritical as boolean) ?? criticalPath.includes(task.id as string),
+      isMilestone: false,
+      dependencies: (task.dependencies as string[]) ?? [],
     }));
   }, [currentSchedule]);
 
@@ -107,16 +108,17 @@ export default function TimelinePage({ params }: { params: Promise<{ id: string 
   const projectStart = ganttTasks.length > 0 ? ganttTasks[0]!.startDate : new Date().toISOString().split('T')[0]!;
   const projectEnd = ganttTasks.length > 0 ? ganttTasks[ganttTasks.length - 1]!.endDate : new Date().toISOString().split('T')[0]!;
 
-  // Build milestones for the tracker view
+  // Build milestones for the tracker view from the milestones relation
   const trackerMilestones = useMemo(() => {
-    if ((currentSchedule as any)?.milestones?.length) {
-      return ((currentSchedule as any).milestones as Record<string, unknown>[]).map((ms) => ({
+    const msList = (currentSchedule as any)?.milestones as Record<string, unknown>[] | undefined;
+    if (msList?.length) {
+      return msList.map((ms) => ({
         id: ms.id as string,
         name: (ms.name as string) || 'Unnamed Milestone',
         status: (ms.status as string) || 'pending',
         dueDate: ms.dueDate ? new Date(ms.dueDate as string).toISOString() : null,
         completedDate: ms.completedDate ? new Date(ms.completedDate as string).toISOString() : null,
-        hasPaymentLink: !!(ms.paymentId as string | undefined),
+        hasPaymentLink: (ms.paymentLinked as boolean) ?? false,
       }));
     }
     // Preview milestones from trade sequence

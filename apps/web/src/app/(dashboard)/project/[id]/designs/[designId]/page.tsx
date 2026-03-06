@@ -149,7 +149,10 @@ export default function DesignDetailPage({
     );
   }
 
-  const beforeImage = roomUploads.find((u: any) => u.mimeType.startsWith('image/'));
+  // Use the specific source photo (the one selected during generation) for before/after
+  const beforeImage = variant.sourceUploadId
+    ? roomUploads.find((u: any) => u.id === variant.sourceUploadId)
+    : roomUploads.find((u: any) => u.mimeType?.startsWith('image/'));
   const beforeImageUrl = beforeImage
     ? `/api/uploads/${encodeURIComponent(beforeImage.storageKey)}`
     : null;
@@ -189,6 +192,7 @@ export default function DesignDetailPage({
             projectId={projectId}
             currentStyle={variant.style}
             currentBudget={variant.budgetTier}
+            currentRoomType={variant.roomType}
             onGenerated={() => {
               utils.designVariant.listByProject.invalidate({ projectId });
             }}
@@ -263,6 +267,9 @@ export default function DesignDetailPage({
                       designVariantId: designId,
                     });
                     setBomJobId(null);
+                  }}
+                  onFailed={(error) => {
+                    toast({ title: 'BOM generation failed', description: error });
                   }}
                 />
               </CardContent>
@@ -379,6 +386,9 @@ export default function DesignDetailPage({
                       designVariantId: designId,
                     });
                     setDrawingJobId(null);
+                  }}
+                  onFailed={(error) => {
+                    toast({ title: 'Drawing generation failed', description: error });
                   }}
                 />
               </CardContent>
@@ -572,6 +582,7 @@ export default function DesignDetailPage({
               projectId={projectId}
               currentStyle={variant.style}
               currentBudget={variant.budgetTier}
+              currentRoomType={variant.roomType}
               onGenerated={() => {
                 utils.designVariant.listByProject.invalidate({ projectId });
               }}

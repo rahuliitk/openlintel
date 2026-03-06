@@ -50,33 +50,33 @@ export const scheduleRouter = router({
 
       if (!job) throw new Error('Failed to create job');
 
-      // Generate construction schedule phases
+      // Generate construction schedule phases with task IDs for dependencies
       const phases = [
-        { name: 'Site Preparation', duration: 3, dependencies: [] as string[], trade: 'General' },
-        { name: 'Demolition', duration: 2 + roomCount, dependencies: ['Site Preparation'], trade: 'Demolition' },
-        { name: 'Civil & Structural', duration: 5 + roomCount * 2, dependencies: ['Demolition'], trade: 'Civil' },
-        { name: 'Plumbing Rough-in', duration: 3 + roomCount, dependencies: ['Civil & Structural'], trade: 'Plumbing' },
-        { name: 'Electrical Rough-in', duration: 3 + roomCount, dependencies: ['Civil & Structural'], trade: 'Electrical' },
-        { name: 'HVAC Installation', duration: 4 + roomCount, dependencies: ['Plumbing Rough-in', 'Electrical Rough-in'], trade: 'HVAC' },
-        { name: 'Carpentry & Woodwork', duration: 5 + roomCount * 3, dependencies: ['HVAC Installation'], trade: 'Carpentry' },
-        { name: 'Flooring', duration: 3 + roomCount, dependencies: ['Carpentry & Woodwork'], trade: 'Flooring' },
-        { name: 'Painting & Finishes', duration: 3 + roomCount, dependencies: ['Flooring'], trade: 'Painting' },
-        { name: 'Fixture Installation', duration: 2 + roomCount, dependencies: ['Painting & Finishes'], trade: 'Fixtures' },
-        { name: 'Final Cleanup & Inspection', duration: 2, dependencies: ['Fixture Installation'], trade: 'General' },
+        { id: 'task-1', name: 'Site Preparation', duration: 3, depIds: [] as string[], trade: 'general', isCritical: true },
+        { id: 'task-2', name: 'Demolition', duration: 2 + roomCount, depIds: ['task-1'], trade: 'demolition', isCritical: true },
+        { id: 'task-3', name: 'Civil & Structural', duration: 5 + roomCount * 2, depIds: ['task-2'], trade: 'civil', isCritical: true },
+        { id: 'task-4', name: 'Plumbing Rough-in', duration: 3 + roomCount, depIds: ['task-3'], trade: 'plumbing', isCritical: false },
+        { id: 'task-5', name: 'Electrical Rough-in', duration: 3 + roomCount, depIds: ['task-3'], trade: 'electrical', isCritical: false },
+        { id: 'task-6', name: 'HVAC Installation', duration: 4 + roomCount, depIds: ['task-4', 'task-5'], trade: 'hvac', isCritical: false },
+        { id: 'task-7', name: 'Carpentry & Woodwork', duration: 5 + roomCount * 3, depIds: ['task-6'], trade: 'carpentry', isCritical: true },
+        { id: 'task-8', name: 'Flooring', duration: 3 + roomCount, depIds: ['task-7'], trade: 'flooring', isCritical: true },
+        { id: 'task-9', name: 'Painting & Finishes', duration: 3 + roomCount, depIds: ['task-8'], trade: 'painting', isCritical: false },
+        { id: 'task-10', name: 'Fixture Installation', duration: 2 + roomCount, depIds: ['task-9'], trade: 'fixtures', isCritical: false },
+        { id: 'task-11', name: 'Final Cleanup & Inspection', duration: 2, depIds: ['task-10'], trade: 'cleanup', isCritical: true },
       ];
 
-      // Calculate start/end dates for each phase using dependency resolution
+      // Calculate start/end dates using dependency resolution
       const today = new Date();
-      const phaseEndDays: Record<string, number> = {};
-      const tasks = phases.map((phase, idx) => {
+      const taskEndDays: Record<string, number> = {};
+      const tasks = phases.map((phase) => {
         let startDay = 0;
-        for (const dep of phase.dependencies) {
-          if (phaseEndDays[dep] !== undefined && phaseEndDays[dep] > startDay) {
-            startDay = phaseEndDays[dep];
+        for (const depId of phase.depIds) {
+          if (taskEndDays[depId] !== undefined && taskEndDays[depId]! > startDay) {
+            startDay = taskEndDays[depId]!;
           }
         }
         const endDay = startDay + phase.duration;
-        phaseEndDays[phase.name] = endDay;
+        taskEndDays[phase.id] = endDay;
 
         const startDate = new Date(today);
         startDate.setDate(startDate.getDate() + startDay);
@@ -84,23 +84,28 @@ export const scheduleRouter = router({
         endDate.setDate(endDate.getDate() + endDay);
 
         return {
-          id: `task-${idx + 1}`,
+          id: phase.id,
           name: phase.name,
           duration: phase.duration,
           startDay,
           endDay,
           startDate: startDate.toISOString(),
           endDate: endDate.toISOString(),
-          dependencies: phase.dependencies,
+          dependencies: phase.depIds,
           trade: phase.trade,
+          isCritical: phase.isCritical,
+          progress: 0,
           status: 'pending',
         };
       });
 
       // Total project duration
-      const totalDays = Math.max(...Object.values(phaseEndDays));
+      const totalDays = Math.max(...Object.values(taskEndDays));
       const projectEndDate = new Date(today);
       projectEndDate.setDate(projectEndDate.getDate() + totalDays);
+
+      // Critical path: only tasks marked as critical
+      const criticalTaskIds = tasks.filter((t) => t.isCritical).map((t) => t.id);
 
       // Create schedule record
       const [schedule] = await ctx.db
@@ -109,7 +114,7 @@ export const scheduleRouter = router({
           projectId: input.projectId,
           jobId: job.id,
           tasks,
-          criticalPath: tasks.map((t) => t.id),
+          criticalPath: criticalTaskIds,
           startDate: today,
           endDate: projectEndDate,
           metadata: { roomCount, totalDays },
@@ -118,7 +123,7 @@ export const scheduleRouter = router({
 
       if (!schedule) throw new Error('Failed to create schedule');
 
-      // Create milestone records for each phase completion
+      // Create milestone records for key phase completions
       for (const task of tasks) {
         await ctx.db.insert(milestones).values({
           scheduleId: schedule.id,
@@ -126,6 +131,7 @@ export const scheduleRouter = router({
           description: `Completion of ${task.name} phase (${task.duration} days, ${task.trade})`,
           dueDate: new Date(task.endDate),
           status: 'pending',
+          paymentLinked: task.name === 'Flooring' || task.name === 'Final Cleanup & Inspection',
         });
       }
 

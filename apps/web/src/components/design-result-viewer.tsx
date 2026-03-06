@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState } from 'react';
 import {
   Button,
   Card,
@@ -14,7 +14,6 @@ import {
   Download,
   ShoppingCart,
   FileText,
-  GripVertical,
   ImageIcon,
   Palette,
   Sofa,
@@ -72,99 +71,34 @@ interface DesignResultViewerProps {
   onDownload?: (url: string) => void;
 }
 
-function BeforeAfterSlider({
+function BeforeAfterImages({
   beforeUrl,
   afterUrl,
 }: {
   beforeUrl: string;
   afterUrl: string;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [sliderPosition, setSliderPosition] = useState(50);
-  const [isDragging, setIsDragging] = useState(false);
-
-  const handleMove = useCallback(
-    (clientX: number) => {
-      if (!containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const x = clientX - rect.left;
-      const percentage = Math.max(0, Math.min(100, (x / rect.width) * 100));
-      setSliderPosition(percentage);
-    },
-    [],
-  );
-
-  const handleMouseDown = () => setIsDragging(true);
-  const handleMouseUp = () => setIsDragging(false);
-
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent) => {
-      if (isDragging) handleMove(e.clientX);
-    },
-    [isDragging, handleMove],
-  );
-
-  const handleTouchMove = useCallback(
-    (e: React.TouchEvent) => {
-      const touch = e.touches[0];
-      if (touch) handleMove(touch.clientX);
-    },
-    [handleMove],
-  );
-
   return (
-    <div
-      ref={containerRef}
-      className="relative aspect-video w-full cursor-col-resize overflow-hidden rounded-lg border select-none"
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleMouseUp}
-    >
-      <img
-        src={afterUrl}
-        alt="After design"
-        className="absolute inset-0 h-full w-full object-cover"
-        draggable={false}
-      />
-      <div
-        className="absolute inset-0 overflow-hidden"
-        style={{ width: `${sliderPosition}%` }}
-      >
-        <img
-          src={beforeUrl}
-          alt="Before design"
-          className="absolute inset-0 h-full w-full object-cover"
-          style={{
-            width: containerRef.current
-              ? `${containerRef.current.offsetWidth}px`
-              : '100vw',
-          }}
-          draggable={false}
-        />
-      </div>
-      <div
-        className="absolute top-0 bottom-0 z-10 w-0.5 bg-white shadow-lg"
-        style={{ left: `${sliderPosition}%` }}
-      >
-        <div
-          className="absolute top-1/2 left-1/2 flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-md"
-          onMouseDown={handleMouseDown}
-          onTouchStart={handleMouseDown}
-        >
-          <GripVertical className="h-4 w-4 text-muted-foreground" />
+    <div className="grid grid-cols-2 gap-4">
+      <div className="space-y-2">
+        <Badge variant="secondary" className="text-xs">Before</Badge>
+        <div className="overflow-hidden rounded-lg border">
+          <img
+            src={beforeUrl}
+            alt="Before design"
+            className="w-full object-contain"
+          />
         </div>
       </div>
-      <div className="absolute top-3 left-3 z-10">
-        <Badge variant="secondary" className="bg-black/60 text-white">
-          Before
-        </Badge>
-      </div>
-      <div className="absolute top-3 right-3 z-10">
-        <Badge variant="secondary" className="bg-black/60 text-white">
-          After
-        </Badge>
+      <div className="space-y-2">
+        <Badge variant="secondary" className="text-xs">After</Badge>
+        <div className="overflow-hidden rounded-lg border">
+          <img
+            src={afterUrl}
+            alt="After design"
+            className="w-full object-contain"
+          />
+        </div>
       </div>
     </div>
   );
@@ -224,17 +158,19 @@ export function DesignResultViewer({
     <div className="space-y-6">
       {/* Before/After Comparison */}
       {beforeImageUrl && currentRenderUrl ? (
-        <BeforeAfterSlider
+        <BeforeAfterImages
           beforeUrl={beforeImageUrl}
           afterUrl={currentRenderUrl}
         />
       ) : currentRenderUrl ? (
-        <div className="relative aspect-video w-full overflow-hidden rounded-lg border">
-          <img
-            src={currentRenderUrl}
-            alt={variantName}
-            className="h-full w-full object-cover"
-          />
+        <div className="mx-auto max-w-2xl">
+          <div className="overflow-hidden rounded-lg border">
+            <img
+              src={currentRenderUrl}
+              alt={variantName}
+              className="w-full object-contain"
+            />
+          </div>
         </div>
       ) : null}
 

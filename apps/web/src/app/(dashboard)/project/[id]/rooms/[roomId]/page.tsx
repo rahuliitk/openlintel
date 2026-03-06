@@ -294,7 +294,13 @@ export default function RoomDetailPage({
         <TabsContent value="designs" className="space-y-4">
           <div className="flex items-center justify-between">
             <p className="text-sm text-muted-foreground">
-              Create design variants to generate AI renderings.
+              Create design variants, then generate AI designs with room images from the{' '}
+              <Link
+                href={`/project/${projectId}/designs`}
+                className="underline hover:text-foreground"
+              >
+                Designs section
+              </Link>.
             </p>
             <Dialog open={variantOpen} onOpenChange={setVariantOpen}>
               <DialogTrigger asChild>
@@ -372,16 +378,14 @@ export default function RoomDetailPage({
               <p className="text-sm text-muted-foreground mb-3">
                 No design variants yet. Add one to get started.
               </p>
-              <Button size="sm" disabled title="Design engine service required">
-                Generate Designs (Coming Soon)
-              </Button>
             </Card>
           ) : (
             <div className="space-y-3">
               {((room as any).designVariants ?? []).map((variant: any) => (
-                <div
+                <Link
                   key={variant.id}
-                  className="flex items-center justify-between rounded-lg border p-4"
+                  href={`/project/${projectId}/designs/${variant.id}`}
+                  className="flex items-center justify-between rounded-lg border p-4 hover:bg-muted/50 transition-colors"
                 >
                   <div className="space-y-1">
                     <p className="font-medium">{variant.name}</p>
@@ -396,7 +400,8 @@ export default function RoomDetailPage({
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.preventDefault();
                       if (confirm('Delete this design variant?')) {
                         deleteVariant.mutate({ id: variant.id });
                       }
@@ -404,7 +409,7 @@ export default function RoomDetailPage({
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>
-                </div>
+                </Link>
               ))}
             </div>
           )}
