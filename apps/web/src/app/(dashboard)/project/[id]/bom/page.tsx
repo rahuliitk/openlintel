@@ -1,6 +1,7 @@
 'use client';
 
-import { use, useState, useEffect } from 'react';
+import { use, useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { trpc } from '@/lib/trpc/client';
 import { BOMTable, type BOMItem } from '@/components/bom-table';
 import { BOMCategorySummary } from '@/components/bom-category-summary';
@@ -43,17 +44,45 @@ import Link from 'next/link';
 
 export default function BOMPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: projectId } = use(params);
+  const searchParams = useSearchParams();
   const utils = trpc.useUtils();
+  const autoTriggeredRef = useRef(false);
 
   const [generateOpen, setGenerateOpen] = useState(false);
   const [selectedVariant, setSelectedVariant] = useState('');
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [selectedBomId, setSelectedBomId] = useState<string | null>(null);
+  const [selectedFloorPlanJob, setSelectedFloorPlanJob] = useState('');
 
   const { data: variants = [], isLoading: loadingVariants } =
     trpc.designVariant.listByProject.useQuery({ projectId });
   const { data: bomResults = [], isLoading: loadingBom } =
     trpc.bom.listByProject.useQuery({ projectId });
+
+  // Fetch completed floor plan digitization jobs for structural BOM
+  const { data: floorPlanJobs = [] } = trpc.floorPlan.listDigitizationJobs.useQuery(
+    { projectId },
+  );
+
+  // Fetch uploads to resolve floor plan names
+  const { data: projectUploads = [] } = trpc.upload.listByProject.useQuery({ projectId });
+  const uploadById: Record<string, any> = {};
+  for (const u of projectUploads) uploadById[u.id] = u;
+
+  /** Get a human-friendly name for a floor plan digitization job. */
+  const getFloorPlanJobLabel = (fpJob: any) => {
+    const input = fpJob.inputJson as any;
+    const output = fpJob.outputJson as any;
+    const upload = input?.uploadId ? uploadById[input.uploadId] : null;
+    const roomCount = output?.detectedRooms?.length ?? output?.rooms?.length ?? 0;
+    const name = upload?.label || 'Floor Plan';
+    return `${name} (${roomCount} rooms)`;
+  };
+
+  // Load previously completed structural BOM jobs (cross-session persistence)
+  const { data: structuralBomJobs = [] } = trpc.bom.listStructuralBomJobs.useQuery(
+    { projectId },
+  );
 
   const generateBom = trpc.bom.generate.useMutation({
     onSuccess: (job) => {
@@ -65,6 +94,39 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
       toast({ title: 'Failed to start BOM generation', description: err.message });
     },
   });
+
+  const generateStructuralBom = trpc.bom.generateFromFloorPlan.useMutation({
+    onSuccess: (job) => {
+      setActiveJobId(job!.id);
+      toast({ title: 'Structural BOM generation started' });
+    },
+    onError: (err) => {
+      toast({ title: 'Failed to start structural BOM generation', description: err.message });
+    },
+  });
+
+  // Auto-trigger BOM generation when arriving from floor plan page with fpJobId param
+  const fpJobIdFromUrl = searchParams.get('fpJobId');
+  useEffect(() => {
+    if (
+      fpJobIdFromUrl &&
+      floorPlanJobs.length > 0 &&
+      !autoTriggeredRef.current &&
+      !activeJobId
+    ) {
+      const matchingJob = floorPlanJobs.find((j: any) => j.id === fpJobIdFromUrl);
+      if (matchingJob) {
+        autoTriggeredRef.current = true;
+        setSelectedFloorPlanJob(fpJobIdFromUrl);
+        generateStructuralBom.mutate({
+          projectId,
+          floorPlanJobId: fpJobIdFromUrl,
+          budgetTier: 'mid_range',
+        });
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fpJobIdFromUrl, floorPlanJobs.length, activeJobId, projectId]);
 
   const deleteBom = trpc.bom.delete.useMutation({
     onSuccess: () => {
@@ -93,16 +155,37 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
     },
   );
 
+  // Track structural BOM data from job output
+  const [structuralBomData, setStructuralBomData] = useState<any>(null);
+
   useEffect(() => {
     if (jobStatus?.status === 'completed') {
       utils.bom.listByProject.invalidate({ projectId });
+      utils.bom.listStructuralBomJobs.invalidate({ projectId });
+      // Check if this was a structural BOM job with inline data
+      const output = (jobStatus as any).outputJson;
+      if ((output?.source === 'inline_structural_bom' || output?.source === 'ai_structural_bom') && output?.items) {
+        // Resolve the floor plan name from the input
+        const inputJson = (jobStatus as any).inputJson;
+        const fpUpload = inputJson?.uploadId ? uploadById[inputJson.uploadId] : null;
+        const fpName = fpUpload?.label || 'Floor Plan';
+        setStructuralBomData({
+          id: (jobStatus as any).id || 'structural',
+          items: output.items,
+          totalCost: output.totalCost,
+          currency: output.currency || 'INR',
+          createdAt: (jobStatus as any).completedAt || new Date().toISOString(),
+          variantName: `Structural BOM — ${fpName}`,
+          roomName: `${output.roomCount || 0} rooms`,
+        });
+      }
       setActiveJobId(null);
       toast({ title: 'BOM generation complete' });
     } else if (jobStatus?.status === 'failed') {
       setActiveJobId(null);
       toast({ title: 'BOM generation failed', description: jobStatus.error || 'Unknown error' });
     }
-  }, [jobStatus?.status, projectId, utils.bom.listByProject, jobStatus?.error]);
+  }, [jobStatus?.status, projectId, utils.bom.listByProject, utils.bom.listStructuralBomJobs, jobStatus?.error]);
 
   const handleGenerate = () => {
     if (!selectedVariant) return;
@@ -110,9 +193,36 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
   };
 
   // Parse BOM items from the selected or most recent result
+  // Include structural BOM data from inline fallback and historical jobs
+  const historicalStructuralBoms = structuralBomJobs
+    .filter((j: any) => {
+      const out = j.outputJson as any;
+      return (out?.source === 'inline_structural_bom' || out?.source === 'ai_structural_bom') && out?.items?.length > 0;
+    })
+    .map((j: any) => {
+      const out = j.outputJson as any;
+      const inp = j.inputJson as any;
+      const fpUpload = inp?.uploadId ? uploadById[inp.uploadId] : null;
+      const fpName = fpUpload?.label || 'Floor Plan';
+      return {
+        id: j.id,
+        items: out.items,
+        totalCost: out.totalCost,
+        currency: out.currency || 'INR',
+        createdAt: j.completedAt || j.createdAt,
+        variantName: `Structural BOM — ${fpName}`,
+        roomName: `${out.roomCount || 0} rooms`,
+      };
+    });
+
+  // Merge: active session data + historical + regular BOM results
+  const structuralBoms = structuralBomData
+    ? [structuralBomData, ...historicalStructuralBoms.filter((h: any) => h.id !== structuralBomData.id)]
+    : historicalStructuralBoms;
+  const allBomResults = [...structuralBoms, ...bomResults];
   const activeBom = selectedBomId
-    ? bomResults.find((b: any) => b.id === selectedBomId) || bomResults[0]
-    : bomResults.length > 0 ? bomResults[0] : null;
+    ? allBomResults.find((b: any) => b.id === selectedBomId) || allBomResults[0]
+    : allBomResults.length > 0 ? allBomResults[0] : null;
   const bomItems: BOMItem[] = activeBom?.items
     ? (activeBom.items as BOMItem[])
     : [];
@@ -323,7 +433,7 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
                 )}
               </div>
               <div className="flex items-center gap-2">
-                {bomResults.length > 1 && (
+                {allBomResults.length > 1 && (
                   <Select
                     value={activeBom.id}
                     onValueChange={(val) => setSelectedBomId(val)}
@@ -332,7 +442,7 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
                       <SelectValue placeholder="Select BOM" />
                     </SelectTrigger>
                     <SelectContent>
-                      {bomResults.map((bom: any) => (
+                      {allBomResults.map((bom: any) => (
                         <SelectItem key={bom.id} value={bom.id}>
                           {bom.variantName || 'Variant'} — {new Date(bom.createdAt).toLocaleDateString()}
                         </SelectItem>
@@ -361,6 +471,56 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
         /* Empty state */
         <div className="space-y-6">
           {/* Variant status */}
+          {/* Structural BOM from Floor Plan */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Generate BOM from Floor Plan</CardTitle>
+              <CardDescription>
+                Create a structural BOM directly from your digitized floor plan
+                -- no design variant needed. Upload a DWG, DXF, PDF, or image
+                floor plan first via the Floor Plan page.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {floorPlanJobs.length > 0 ? (
+                <>
+                  <Select value={selectedFloorPlanJob} onValueChange={setSelectedFloorPlanJob}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a completed floor plan" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {floorPlanJobs.map((fpJob: any) => (
+                        <SelectItem key={fpJob.id} value={fpJob.id}>
+                          {getFloorPlanJobLabel(fpJob)} &mdash; {new Date(fpJob.createdAt).toLocaleDateString()}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    onClick={() => generateStructuralBom.mutate({
+                      projectId,
+                      floorPlanJobId: selectedFloorPlanJob,
+                      budgetTier: 'mid_range',
+                    })}
+                    disabled={generateStructuralBom.isPending || Boolean(activeJobId) || !selectedFloorPlanJob}
+                    variant="outline"
+                  >
+                    {generateStructuralBom.isPending ? (
+                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                    ) : (
+                      <ShoppingCart className="mr-1 h-4 w-4" />
+                    )}
+                    Generate Structural BOM
+                  </Button>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No completed floor plan digitizations found. Go to the Floor Plan page, upload a file, and digitize it first.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
           {variants.length > 0 ? (
             <Card>
               <CardHeader>

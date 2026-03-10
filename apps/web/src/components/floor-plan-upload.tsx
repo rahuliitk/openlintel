@@ -9,16 +9,18 @@ import {
 } from '@openlintel/ui';
 import { Upload, X, FileImage } from 'lucide-react';
 
-const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.webp,.gif,.pdf';
+const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.webp,.gif,.pdf,.dwg,.dxf';
 
 interface FloorPlanUploadProps {
   projectId: string;
+  disabled?: boolean;
   onUploadComplete?: (upload: Record<string, unknown>) => void;
   onDigitizationComplete?: () => void;
 }
 
 export function FloorPlanUpload({
   projectId,
+  disabled,
   onUploadComplete,
 }: FloorPlanUploadProps) {
   const [uploading, setUploading] = useState(false);
@@ -29,8 +31,13 @@ export function FloorPlanUpload({
 
   const handleUpload = useCallback(
     async (file: File) => {
+      if (disabled) {
+        setError('Please enter a name before uploading.');
+        return;
+      }
+
       const ext = file.name.split('.').pop()?.toLowerCase();
-      const validExt = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'pdf'];
+      const validExt = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'pdf', 'dwg', 'dxf'];
       if (!validExt.includes(ext ?? '')) {
         setError(`Unsupported file type. Accepted: ${validExt.join(', ')}`);
         return;
@@ -76,7 +83,7 @@ export function FloorPlanUpload({
         setUploadProgress(0);
       }
     },
-    [projectId, onUploadComplete],
+    [projectId, disabled, onUploadComplete],
   );
 
   const handleDrop = useCallback(
@@ -99,16 +106,18 @@ export function FloorPlanUpload({
     <div>
       <div
         className={`relative flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-8 transition-colors ${
-          dragActive
-            ? 'border-primary bg-primary/5'
-            : 'border-muted-foreground/25 hover:border-muted-foreground/50'
+          disabled
+            ? 'border-muted-foreground/15 opacity-50 cursor-not-allowed'
+            : dragActive
+              ? 'border-primary bg-primary/5'
+              : 'border-muted-foreground/25 hover:border-muted-foreground/50'
         }`}
         onDragOver={(e) => {
           e.preventDefault();
-          setDragActive(true);
+          if (!disabled) setDragActive(true);
         }}
         onDragLeave={() => setDragActive(false)}
-        onDrop={handleDrop}
+        onDrop={disabled ? (e) => e.preventDefault() : handleDrop}
       >
         <input
           ref={inputRef}
@@ -131,24 +140,25 @@ export function FloorPlanUpload({
             <FileImage className="mb-3 h-10 w-10 text-muted-foreground" />
             <h3 className="mb-1 text-sm font-medium">Upload Floor Plan</h3>
             <p className="mb-3 text-center text-sm text-muted-foreground">
-              Drag and drop an image or PDF, or click to browse
+              Drag and drop an image, PDF, DWG, or DXF file
             </p>
             <Button
               variant="outline"
               size="sm"
+              disabled={disabled}
               onClick={() => inputRef.current?.click()}
             >
               Choose File
             </Button>
             <div className="mt-3 flex flex-wrap justify-center gap-1.5">
-              {['PNG', 'JPG', 'WEBP', 'GIF', 'PDF'].map((ext) => (
+              {['PNG', 'JPG', 'WEBP', 'GIF', 'PDF', 'DWG', 'DXF'].map((ext) => (
                 <Badge key={ext} variant="secondary" className="text-xs">
                   {ext}
                 </Badge>
               ))}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              Max file size: 10MB
+              Max file size: 50MB
             </p>
           </>
         )}

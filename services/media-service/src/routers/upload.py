@@ -56,8 +56,8 @@ def _generate_presigned_url(
     )
 
 
-def _mime_to_extension(mime_type: str) -> str:
-    """Map MIME type to a file extension."""
+def _mime_to_extension(mime_type: str, filename: str = "") -> str:
+    """Map MIME type to a file extension, with filename fallback."""
     mapping: dict[str, str] = {
         "image/jpeg": ".jpg",
         "image/png": ".png",
@@ -65,24 +65,35 @@ def _mime_to_extension(mime_type: str) -> str:
         "image/gif": ".gif",
         "application/pdf": ".pdf",
     }
-    return mapping.get(mime_type, ".bin")
+    ext = mapping.get(mime_type)
+    if ext:
+        return ext
+    # For CAD files, derive from original filename
+    if filename:
+        original_ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if original_ext in ("dwg", "dxf"):
+            return f".{original_ext}"
+    return ".bin"
 
 
 def _build_metadata(
     image_bytes: bytes,
     mime_type: str,
     original_size: int,
+    filename: str = "",
 ) -> MediaMetadata:
     """Build a ``MediaMetadata`` object from the image bytes."""
     exif = extract_metadata(image_bytes)
     image_hash = compute_image_hash(image_bytes)
 
-    # For PDFs we cannot extract pixel dimensions
-    if mime_type == "application/pdf":
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    # For PDFs and CAD files, we cannot extract pixel dimensions
+    if mime_type == "application/pdf" or ext in ("dwg", "dxf"):
         return MediaMetadata(
             width=0,
             height=0,
-            format="PDF",
+            format=ext.upper() if ext in ("dwg", "dxf") else "PDF",
             mode="N/A",
             file_size_bytes=original_size,
             has_alpha=False,
@@ -131,15 +142,17 @@ async def upload_media(
     original_size = len(file_bytes)
 
     # ── Validate ──────────────────────────────────────────────────────────
-    result = validate_file(file_bytes, content_type)
+    result = validate_file(file_bytes, content_type, filename=original_filename)
     if not result.valid:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=result.error,
         )
 
-    # ── Optimize (images only) ────────────────────────────────────────────
-    is_image = content_type.startswith("image/")
+    # ── Optimize (images only — skip CAD files) ─────────────────────────
+    file_ext = original_filename.rsplit(".", 1)[-1].lower() if "." in original_filename else ""
+    is_cad = file_ext in ("dwg", "dxf")
+    is_image = content_type.startswith("image/") and not is_cad
     if is_image:
         optimized_bytes = optimize_image(file_bytes, content_type)
         thumbnail_bytes = generate_thumbnail(file_bytes)
@@ -149,11 +162,11 @@ async def upload_media(
         thumbnail_bytes = b""
 
     # ── Build metadata ────────────────────────────────────────────────────
-    metadata = _build_metadata(file_bytes, content_type, original_size)
+    metadata = _build_metadata(file_bytes, content_type, original_size, filename=original_filename)
 
     # ── Generate storage keys ─────────────────────────────────────────────
     media_id = str(uuid.uuid4())
-    ext = _mime_to_extension(content_type)
+    ext = _mime_to_extension(content_type, filename=original_filename)
     now = datetime.now(tz=timezone.utc)
     date_prefix = now.strftime("%Y/%m/%d")
 

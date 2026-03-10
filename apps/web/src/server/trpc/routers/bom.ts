@@ -206,6 +206,181 @@ Keep specification field short (under 40 chars). Include 10-15 items.`;
       return job;
     }),
 
+  generateFromFloorPlan: protectedProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        floorPlanJobId: z.string(),
+        budgetTier: z.string().default('mid_range'),
+        currency: z.string().default('INR'),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Verify project ownership
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      // Get the floor plan digitization job output
+      const fpJob = await ctx.db.query.jobs.findFirst({
+        where: and(eq(jobs.id, input.floorPlanJobId), eq(jobs.userId, ctx.userId)),
+      });
+      if (!fpJob) throw new Error('Floor plan job not found');
+      if (fpJob.status !== 'completed') throw new Error('Floor plan digitization not complete');
+
+      const floorPlanData = fpJob.outputJson as Record<string, unknown>;
+      if (!floorPlanData) throw new Error('No floor plan data in job output');
+
+      // Carry the uploadId from the floor plan job so the BOM page can resolve names
+      const fpInput = fpJob.inputJson as Record<string, unknown>;
+      const uploadId = (fpInput?.uploadId as string) || (floorPlanData?.uploadId as string) || null;
+
+      // Create BOM job
+      const [job] = await ctx.db
+        .insert(jobs)
+        .values({
+          userId: ctx.userId,
+          type: 'structural_bom',
+          status: 'pending',
+          inputJson: {
+            projectId: input.projectId,
+            floorPlanJobId: input.floorPlanJobId,
+            uploadId,
+            budgetTier: input.budgetTier,
+          },
+          projectId: input.projectId,
+        })
+        .returning();
+      if (!job) throw new Error('Failed to create job');
+
+      const db = ctx.db;
+
+      // Run AI-powered BOM generation in the background
+      void (async () => {
+        try {
+          const detectedRooms = (floorPlanData as any).detectedRooms || (floorPlanData as any).rooms || [];
+
+          await db
+            .update(jobs)
+            .set({ status: 'running', startedAt: new Date(), progress: 20 })
+            .where(eq(jobs.id, job.id));
+
+          // Build room summary for GPT
+          const roomSummary = detectedRooms.map((r: any) => ({
+            name: r.name,
+            type: r.type,
+            lengthM: ((r.lengthMm || 0) / 1000).toFixed(1),
+            widthM: ((r.widthMm || 0) / 1000).toFixed(1),
+            areaSqm: r.areaSqm || 0,
+            doors: r.doors?.length || 0,
+            windows: r.windows?.length || 0,
+          }));
+
+          const totalArea = detectedRooms.reduce((s: number, r: any) => s + (r.areaSqm || 0), 0);
+
+          const prompt = `You are a professional quantity surveyor and construction estimator. Generate a detailed Bill of Materials (BOM) for the following floor plan.
+
+Floor Plan Details:
+- Total rooms: ${detectedRooms.length}
+- Total area: ${totalArea.toFixed(1)} sqm
+- Budget tier: ${input.budgetTier} (economy / mid_range / luxury)
+- Currency: ${input.currency}
+
+Rooms:
+${roomSummary.map((r: any) => `- ${r.name} (${r.type}): ${r.lengthM}m × ${r.widthM}m = ${r.areaSqm} sqm, ${r.doors} doors, ${r.windows} windows`).join('\n')}
+
+For EACH room, generate items covering: Flooring, Wall Paint/Finishes, Ceiling, Electrical (points, wiring), Plumbing (for bathrooms/kitchens), Doors, Windows.
+
+Calculate quantities from actual room dimensions:
+- Flooring = room area + waste factor
+- Wall paint = perimeter × ceiling height (2.7m) × 2 coats
+- Electrical points = based on room type and size
+- Include waste factors: tiles 8%, paint 10%, plywood 8%
+
+Use realistic ${input.currency} prices for ${input.budgetTier} tier.
+
+Return ONLY valid JSON:
+{"items":[{"name":"Item name - Room name","category":"Category","specification":"Short spec under 40 chars","quantity":10.5,"unit":"sqm","unitPrice":700,"wasteFactor":0.08,"total":7938}],"totalCost":50000,"currency":"${input.currency}"}
+
+total = quantity × unitPrice × (1 + wasteFactor). Include 3-6 items per room.`;
+
+          await db
+            .update(jobs)
+            .set({ progress: 40 })
+            .where(eq(jobs.id, job.id));
+
+          const completion = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'system', content: 'You are a professional quantity surveyor. Output only valid compact JSON. Keep specification fields under 40 characters.' },
+              { role: 'user', content: prompt },
+            ],
+            temperature: 0.3,
+            max_tokens: 16384,
+            response_format: { type: 'json_object' },
+          });
+
+          await db
+            .update(jobs)
+            .set({ progress: 80 })
+            .where(eq(jobs.id, job.id));
+
+          const responseText = completion.choices[0]?.message?.content ?? '';
+          if (!responseText.trim()) throw new Error('OpenAI returned empty response');
+
+          let bomData: any;
+          try {
+            bomData = JSON.parse(responseText);
+          } catch {
+            const cleaned = responseText.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+            const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              bomData = JSON.parse(jsonMatch[0]);
+            } else {
+              throw new Error('Failed to parse AI BOM response');
+            }
+          }
+
+          const items = (bomData.items || []).map((item: any) => ({
+            id: crypto.randomUUID(),
+            ...item,
+            total: Math.round(item.quantity * item.unitPrice * (1 + (item.wasteFactor || 0)) * 100) / 100,
+          }));
+          const totalCost = Math.round(items.reduce((s: number, i: any) => s + i.total, 0) * 100) / 100;
+
+          await db
+            .update(jobs)
+            .set({
+              status: 'completed',
+              progress: 100,
+              completedAt: new Date(),
+              outputJson: {
+                source: 'ai_structural_bom',
+                items,
+                totalCost,
+                currency: input.currency,
+                budgetTier: input.budgetTier,
+                roomCount: detectedRooms.length,
+              },
+            })
+            .where(eq(jobs.id, job.id));
+        } catch (err) {
+          console.error('[Structural BOM Error]', err);
+          await db
+            .update(jobs)
+            .set({
+              status: 'failed',
+              error: err instanceof Error ? err.message : 'Structural BOM generation failed',
+              completedAt: new Date(),
+            })
+            .where(eq(jobs.id, job.id));
+        }
+      })();
+
+      return job;
+    }),
+
   jobStatus: protectedProcedure
     .input(z.object({ jobId: z.string() }))
     .query(async ({ ctx, input }) => {
@@ -214,6 +389,27 @@ Keep specification field short (under 40 chars). Include 10-15 items.`;
       });
       if (!job) throw new Error('Job not found');
       return job;
+    }),
+
+  listStructuralBomJobs: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const allJobs = await ctx.db.query.jobs.findMany({
+        where: and(
+          eq(jobs.projectId, input.projectId),
+          eq(jobs.userId, ctx.userId),
+        ),
+        orderBy: (j, { desc }) => [desc(j.createdAt)],
+      });
+
+      return allJobs.filter(
+        (j) => j.type === 'structural_bom' && j.status === 'completed',
+      );
     }),
 
   delete: protectedProcedure

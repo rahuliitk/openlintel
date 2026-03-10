@@ -42,7 +42,190 @@ import {
   Pencil,
   Check,
   X,
+  ScanLine,
 } from 'lucide-react';
+
+// ---------------------------------------------------------------------------
+// Helpers — preview URLs for non-image uploads (PDF, DWG, DXF)
+// ---------------------------------------------------------------------------
+
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
+
+/** Returns the best image URL for displaying an upload (handles PDF/CAD previews). */
+function getUploadImageUrl(upload: { storageKey: string; mimeType?: string | null }): string {
+  if (upload.mimeType?.startsWith('image/')) {
+    return `/api/uploads/${encodeURIComponent(upload.storageKey)}`;
+  }
+  // Non-image: use the generated preview PNG
+  const previewKey = upload.storageKey.replace(/\.[^.]+$/, '_preview.png');
+  return `/api/uploads/${encodeURIComponent(previewKey)}`;
+}
+
+/** Derive image URL from a raw storageKey (used in digitization results). */
+function storageKeyToImageUrl(storageKey: string): string {
+  const ext = (storageKey.split('.').pop() || '').toLowerCase();
+  if (IMAGE_EXTENSIONS.has(ext)) {
+    return `/api/uploads/${encodeURIComponent(storageKey)}`;
+  }
+  const previewKey = storageKey.replace(/\.[^.]+$/, '_preview.png');
+  return `/api/uploads/${encodeURIComponent(previewKey)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Digitization results panel — shows detected rooms after floor plan digitization
+// ---------------------------------------------------------------------------
+
+const ROOM_COLORS = [
+  '#3b82f6', '#22c55e', '#f97316', '#a855f7', '#ec4899',
+  '#06b6d4', '#eab308', '#ef4444', '#14b8a6', '#8b5cf6',
+];
+
+function DigitizationResultsPanel({
+  job,
+  onClose,
+  onGoToBom,
+}: {
+  job: any;
+  onClose: () => void;
+  onGoToBom: () => void;
+}) {
+  const output = job.outputJson as any;
+  const inputData = job.inputJson as any;
+  const rooms = output?.detectedRooms || output?.rooms || [];
+  const summary = output?.summary;
+  const width = output?.width || 800;
+  const height = output?.height || 600;
+  const storageKey = output?.storageKey || inputData?.storageKey;
+  const imageUrl = storageKey ? storageKeyToImageUrl(storageKey) : null;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">Digitization Results</h3>
+          <p className="text-sm text-muted-foreground">
+            {rooms.length} room{rooms.length !== 1 ? 's' : ''} detected
+            {summary?.totalAreaSqm ? ` — ${summary.totalAreaSqm} sqm total` : ''}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={onGoToBom}>
+            Generate BOM
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      {/* Uploaded floor plan image */}
+      {imageUrl && (
+        <Card>
+          <CardContent className="p-4">
+            <p className="mb-2 text-xs font-medium text-muted-foreground">Uploaded Floor Plan</p>
+            <img
+              src={imageUrl}
+              alt="Uploaded floor plan"
+              className="w-full rounded-lg border object-contain"
+              style={{ maxHeight: '300px' }}
+            />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* SVG floor plan visualization */}
+      <Card>
+        <CardContent className="p-4">
+          <p className="mb-2 text-xs font-medium text-muted-foreground">Detected Room Layout</p>
+          <svg
+            viewBox={`0 0 ${width} ${height}`}
+            className="w-full rounded-lg border bg-white dark:bg-gray-950"
+            style={{ maxHeight: '400px' }}
+          >
+            {/* Room polygons */}
+            {rooms.map((room: any, i: number) => {
+              const color = ROOM_COLORS[i % ROOM_COLORS.length];
+              const polygon = room.polygon || [];
+              if (polygon.length === 0) return null;
+              const points = polygon.map((p: any) => `${p.x},${p.y}`).join(' ');
+              const cx = polygon.reduce((s: number, p: any) => s + p.x, 0) / polygon.length;
+              const cy = polygon.reduce((s: number, p: any) => s + p.y, 0) / polygon.length;
+
+              return (
+                <g key={room.id || `room-${i}`}>
+                  <polygon
+                    points={points}
+                    fill={`${color}22`}
+                    stroke={color}
+                    strokeWidth="2"
+                  />
+                  <text
+                    x={cx}
+                    y={cy - 8}
+                    fill={color}
+                    fontSize="13"
+                    fontWeight="600"
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                  >
+                    {room.name || room.type}
+                  </text>
+                  <text
+                    x={cx}
+                    y={cy + 10}
+                    fill={color}
+                    fontSize="10"
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    opacity="0.7"
+                  >
+                    {room.areaSqm ? `${room.areaSqm} sqm` : ''}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        </CardContent>
+      </Card>
+
+      {/* Room list */}
+      <div className="grid gap-2 sm:grid-cols-2">
+        {rooms.map((room: any, i: number) => {
+          const color = ROOM_COLORS[i % ROOM_COLORS.length];
+          return (
+            <div
+              key={room.id || `room-${i}`}
+              className="flex items-center gap-3 rounded-lg border p-3"
+            >
+              <span
+                className="h-3 w-3 rounded-full shrink-0"
+                style={{ backgroundColor: color }}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium truncate">{room.name || `Room ${i + 1}`}</p>
+                <p className="text-xs text-muted-foreground">
+                  {room.type}
+                  {room.lengthMm && room.widthMm ? ` — ${(room.lengthMm / 1000).toFixed(1)}m × ${(room.widthMm / 1000).toFixed(1)}m` : ''}
+                  {room.areaSqm ? ` — ${room.areaSqm} sqm` : ''}
+                </p>
+              </div>
+              {room.doors?.length > 0 && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {room.doors.length} door{room.doors.length !== 1 ? 's' : ''}
+                </Badge>
+              )}
+              {room.windows?.length > 0 && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {room.windows.length} win
+                </Badge>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Default prompt
@@ -272,8 +455,10 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
   // Lightbox
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
-  // Custom names for uploads
-  const [uploadNames, setUploadNames] = useState<Record<string, string>>({});
+  // Track uploads whose preview image failed to load (fallback to placeholder)
+  const [previewErrors, setPreviewErrors] = useState<Set<string>>(new Set());
+
+  // Upload renaming
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [editNameValue, setEditNameValue] = useState('');
   const [newUploadName, setNewUploadName] = useState('');
@@ -291,6 +476,13 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
   const { data: project, isLoading: loadingProject } = trpc.project.byId.useQuery({ id: projectId });
   const { data: uploads = [] } = trpc.upload.listByProject.useQuery({ projectId });
   const floorPlanUploads = uploads.filter((u: any) => u.category === 'floor_plan');
+
+  // Rename mutation (persists label to DB)
+  const renameUpload = trpc.upload.rename.useMutation({
+    onSuccess: () => {
+      utils.upload.listByProject.invalidate({ projectId });
+    },
+  });
 
   // Load render history from DB
   const { data: renderJobs } = trpc.floorPlanRender.listRenders.useQuery(
@@ -315,7 +507,7 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
 
   const activeUpload = floorPlanUploads.find((u: any) => u.id === activeUploadId);
   const activeUploadUrl = activeUpload
-    ? `/api/uploads/${encodeURIComponent(activeUpload.storageKey)}`
+    ? getUploadImageUrl(activeUpload)
     : undefined;
 
   const activeMessages = messages.filter((m) => m.uploadId === activeUploadId);
@@ -341,17 +533,63 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
     autoResizeTextarea();
   }, [editPrompt, autoResizeTextarea]);
 
+  // Floor plan digitization
+  const [digitizeJobId, setDigitizeJobId] = useState<string | null>(null);
+  const [viewingDigitization, setViewingDigitization] = useState<string | null>(null); // uploadId
+
+  const digitizeFloorPlan = trpc.floorPlan.digitize.useMutation({
+    onSuccess: (job) => {
+      if (job) setDigitizeJobId(job.id);
+      toast({ title: 'Floor plan digitization started', description: 'Extracting rooms, walls, and dimensions...' });
+    },
+    onError: (err) => {
+      toast({ title: 'Digitization failed', description: err.message });
+    },
+  });
+
+  // Poll for digitization job completion
+  const { data: digitizeJobStatus } = trpc.floorPlan.jobStatus.useQuery(
+    { jobId: digitizeJobId! },
+    {
+      enabled: Boolean(digitizeJobId),
+      refetchInterval: (query) => {
+        const s = query.state.data?.status;
+        return s === 'completed' || s === 'failed' ? false : 1500;
+      },
+    },
+  );
+
+  useEffect(() => {
+    if (digitizeJobStatus?.status === 'completed') {
+      utils.floorPlan.listDigitizationJobs.invalidate({ projectId });
+      toast({ title: 'Floor plan digitized', description: 'Rooms and dimensions extracted successfully.' });
+      setDigitizeJobId(null);
+    } else if (digitizeJobStatus?.status === 'failed') {
+      toast({ title: 'Digitization failed', description: digitizeJobStatus.error || 'Unknown error' });
+      setDigitizeJobId(null);
+    }
+  }, [digitizeJobStatus?.status, projectId, utils.floorPlan.listDigitizationJobs]);
+
+  const { data: digitizationJobs = [] } = trpc.floorPlan.listDigitizationJobs.useQuery(
+    { projectId },
+  );
+
+  // Map uploadId → latest completed digitization job with output data
+  const digitizationByUpload: Record<string, any> = {};
+  for (const j of digitizationJobs) {
+    const uploadId = (j.inputJson as any)?.uploadId;
+    if (uploadId && j.status === 'completed') {
+      digitizationByUpload[uploadId] = j;
+    }
+  }
+  const digitizedUploadIds = new Set(Object.keys(digitizationByUpload));
+
   // Mutations
   const deleteUpload = trpc.upload.delete.useMutation({
     onSuccess: (_data, variables) => {
       utils.upload.listByProject.invalidate({ projectId });
       if (activeUploadId === variables.id) setActiveUploadId(null);
       setMessages((prev) => prev.filter((m) => m.uploadId !== variables.id));
-      setUploadNames((prev) => {
-        const next = { ...prev };
-        delete next[variables.id];
-        return next;
-      });
       toast({ title: 'Floor plan deleted' });
     },
   });
@@ -542,7 +780,7 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
 
   // Upload naming helpers
   const getUploadName = (upload: any) => {
-    return uploadNames[upload.id] || `Floor Plan ${floorPlanUploads.indexOf(upload) + 1}`;
+    return upload.label || `Floor Plan ${floorPlanUploads.indexOf(upload) + 1}`;
   };
 
   const startEditName = (uploadId: string, currentName: string) => {
@@ -552,7 +790,7 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
 
   const saveName = (uploadId: string) => {
     if (editNameValue.trim()) {
-      setUploadNames((prev) => ({ ...prev, [uploadId]: editNameValue.trim() }));
+      renameUpload.mutate({ id: uploadId, label: editNameValue.trim() });
     }
     setEditingNameId(null);
   };
@@ -597,14 +835,13 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
           </Button>
           <div className="h-5 w-px bg-border" />
           <div className="flex items-center gap-2">
-            {activeUpload.mimeType?.startsWith('image/') && (
-              <img
-                src={activeUploadUrl}
-                alt=""
-                className="h-8 w-8 cursor-pointer rounded border object-cover"
-                onClick={() => activeUploadUrl && setLightboxSrc(activeUploadUrl)}
-              />
-            )}
+            <img
+              src={activeUploadUrl}
+              alt=""
+              className="h-8 w-8 cursor-pointer rounded border object-cover"
+              onClick={() => activeUploadUrl && setLightboxSrc(activeUploadUrl)}
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            />
             <span className="font-medium text-sm">{name}</span>
           </div>
         </div>
@@ -620,12 +857,13 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
               <div className="rounded-2xl rounded-tl-sm bg-muted px-4 py-2.5 text-sm">
                 <p className="text-muted-foreground">Uploaded floor plan</p>
               </div>
-              {activeUpload.mimeType?.startsWith('image/') ? (
+              {activeUploadUrl && !previewErrors.has(activeUploadId!) ? (
                 <img
                   src={activeUploadUrl}
                   alt={name}
                   className="max-h-[280px] w-auto max-w-full cursor-pointer rounded-xl border object-contain transition-opacity hover:opacity-90"
                   onClick={() => activeUploadUrl && setLightboxSrc(activeUploadUrl)}
+                  onError={() => setPreviewErrors((prev) => new Set(prev).add(activeUploadId!))}
                 />
               ) : (
                 <div className="flex h-40 w-56 items-center justify-center rounded-xl bg-muted">
@@ -696,6 +934,37 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
   }
 
   // ======================================================================
+  // VIEW: Digitization results for a specific upload
+  // ======================================================================
+  if (viewingDigitization) {
+    const digJob = digitizationByUpload[viewingDigitization];
+    if (digJob) {
+      return (
+        <div className="mx-auto max-w-4xl">
+          <div className="mb-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setViewingDigitization(null)}
+              className="gap-1.5"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Floor Plans
+            </Button>
+          </div>
+          <DigitizationResultsPanel
+            job={digJob}
+            onClose={() => setViewingDigitization(null)}
+            onGoToBom={() => {
+              window.location.href = `/project/${projectId}/bom?fpJobId=${digJob.id}`;
+            }}
+          />
+        </div>
+      );
+    }
+  }
+
+  // ======================================================================
   // VIEW: Upload list
   // ======================================================================
   return (
@@ -703,7 +972,7 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
       <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">Floor Plan Studio</h1>
         <p className="text-sm text-muted-foreground">
-          Upload floor plans and generate photorealistic renders with AI.
+          Upload floor plans (images, PDF, DWG, DXF) and generate photorealistic renders with AI.
         </p>
       </div>
 
@@ -714,7 +983,7 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
             <CardTitle className="text-lg">Upload Floor Plan</CardTitle>
           </div>
           <CardDescription>
-            Upload an image or PDF. Give it a name to organize your floor plans.
+            Upload an image, PDF, DWG, or DXF file. Enter a name before uploading.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -725,10 +994,11 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
           />
           <FloorPlanUpload
             projectId={projectId}
+            disabled={!newUploadName.trim()}
             onUploadComplete={(upload: any) => {
               utils.upload.listByProject.invalidate({ projectId });
-              if (upload?.id && newUploadName.trim()) {
-                setUploadNames((prev) => ({ ...prev, [upload.id]: newUploadName.trim() }));
+              if (upload?.id) {
+                renameUpload.mutate({ id: upload.id, label: newUploadName.trim() });
               }
               setNewUploadName('');
             }}
@@ -755,11 +1025,12 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
                   onClick={() => openUpload(upload.id)}
                 >
                   <div className="relative aspect-video bg-muted">
-                    {upload.mimeType?.startsWith('image/') ? (
+                    {!previewErrors.has(upload.id) ? (
                       <img
-                        src={`/api/uploads/${encodeURIComponent(upload.storageKey)}`}
+                        src={getUploadImageUrl(upload)}
                         alt={name}
                         className="h-full w-full object-contain"
+                        onError={() => setPreviewErrors((prev) => new Set(prev).add(upload.id))}
                       />
                     ) : (
                       <div className="flex h-full items-center justify-center">
@@ -827,20 +1098,58 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
                           {new Date(upload.createdAt).toLocaleDateString()}
                         </p>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                        disabled={deleteUpload.isPending}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (confirm('Delete this floor plan and all its renders?')) {
-                            deleteUpload.mutate({ id: upload.id });
-                          }
-                        }}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        {digitizedUploadIds.has(upload.id) ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs gap-1 bg-green-50 border-green-200 text-green-700 hover:bg-green-100 dark:bg-green-900/20 dark:border-green-800 dark:text-green-400"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewingDigitization(upload.id);
+                            }}
+                          >
+                            <Check className="h-3 w-3" />
+                            View Results
+                          </Button>
+                        ) : digitizeJobId && (digitizeJobStatus as any)?.inputJson?.uploadId === upload.id ? (
+                          <Badge variant="secondary" className="text-[10px] gap-1">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Digitizing...
+                          </Badge>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs gap-1"
+                            disabled={digitizeFloorPlan.isPending || Boolean(digitizeJobId)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              digitizeFloorPlan.mutate({
+                                projectId,
+                                uploadId: upload.id,
+                              });
+                            }}
+                          >
+                            <ScanLine className="h-3 w-3" />
+                            Digitize
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                          disabled={deleteUpload.isPending}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm('Delete this floor plan and all its renders?')) {
+                              deleteUpload.mutate({ id: upload.id });
+                            }
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -853,7 +1162,7 @@ export default function FloorPlanPage({ params }: { params: Promise<{ id: string
           <Map className="mb-4 h-12 w-12 text-muted-foreground" />
           <h2 className="mb-2 text-lg font-semibold">No Floor Plans Yet</h2>
           <p className="text-sm text-muted-foreground">
-            Upload an image or PDF of your floor plan above to get started.
+            Upload an image, PDF, DWG, or DXF floor plan above to get started.
           </p>
         </Card>
       )}

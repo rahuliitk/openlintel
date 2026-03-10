@@ -103,6 +103,7 @@ export const uploads = pgTable('uploads', {
   projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
   roomId: text('room_id').references(() => rooms.id, { onDelete: 'set null' }),
   filename: text('filename').notNull(),
+  label: text('label'), // user-friendly display name (editable)
   mimeType: text('mime_type').notNull(),
   sizeBytes: integer('size_bytes').notNull(),
   storageKey: text('storage_key').notNull(), // path in MinIO/S3

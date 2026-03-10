@@ -33,6 +33,22 @@ export const uploadRouter = router({
       });
     }),
 
+  rename: protectedProcedure
+    .input(z.object({ id: z.string(), label: z.string().min(1).max(200) }))
+    .mutation(async ({ ctx, input }) => {
+      const upload = await ctx.db.query.uploads.findFirst({
+        where: and(eq(uploads.id, input.id), eq(uploads.userId, ctx.userId)),
+      });
+      if (!upload) throw new Error('Upload not found');
+
+      const [updated] = await ctx.db
+        .update(uploads)
+        .set({ label: input.label })
+        .where(eq(uploads.id, input.id))
+        .returning();
+      return updated;
+    }),
+
   delete: protectedProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
