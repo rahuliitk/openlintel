@@ -74,9 +74,13 @@ export default function BOMPage({ params }: { params: Promise<{ id: string }> })
     const input = fpJob.inputJson as any;
     const output = fpJob.outputJson as any;
     const upload = input?.uploadId ? uploadById[input.uploadId] : null;
-    const roomCount = output?.detectedRooms?.length ?? output?.rooms?.length ?? 0;
+    const floors = output?.floors || [];
+    const roomCount = floors.length > 0
+      ? floors.reduce((s: number, f: any) => s + (f.rooms?.length || 0), 0)
+      : output?.detectedRooms?.length ?? output?.rooms?.length ?? 0;
+    const floorCount = floors.length > 1 ? `, ${floors.length} floors` : '';
     const name = upload?.label || 'Floor Plan';
-    return `${name} (${roomCount} rooms)`;
+    return `${name} (${roomCount} rooms${floorCount})`;
   };
 
   // Load previously completed structural BOM jobs (cross-session persistence)

@@ -259,17 +259,23 @@ Keep specification field short (under 40 chars). Include 10-15 items.`;
       // Run AI-powered BOM generation in the background
       void (async () => {
         try {
-          const detectedRooms = (floorPlanData as any).detectedRooms || (floorPlanData as any).rooms || [];
+          // Support new multi-floor format and old flat format
+          const floors = (floorPlanData as any).floors || [];
+          const detectedRooms = floors.length > 0
+            ? floors.flatMap((f: any) => (f.rooms || []).map((r: any) => ({ ...r, floorName: f.floorName })))
+            : (floorPlanData as any).detectedRooms || (floorPlanData as any).rooms || [];
 
           await db
             .update(jobs)
             .set({ status: 'running', startedAt: new Date(), progress: 20 })
             .where(eq(jobs.id, job.id));
 
-          // Build room summary for GPT
+          // Build room summary for GPT (include floor info if multi-floor)
+          const hasFloors = floors.length > 1;
           const roomSummary = detectedRooms.map((r: any) => ({
             name: r.name,
             type: r.type,
+            floor: r.floorName || 'Floor Plan',
             lengthM: ((r.lengthMm || 0) / 1000).toFixed(1),
             widthM: ((r.widthMm || 0) / 1000).toFixed(1),
             areaSqm: r.areaSqm || 0,
@@ -279,16 +285,20 @@ Keep specification field short (under 40 chars). Include 10-15 items.`;
 
           const totalArea = detectedRooms.reduce((s: number, r: any) => s + (r.areaSqm || 0), 0);
 
+          const floorSection = hasFloors
+            ? `\nFloors: ${floors.map((f: any) => `${f.floorName} (${f.rooms?.length || 0} rooms)`).join(', ')}`
+            : '';
+
           const prompt = `You are a professional quantity surveyor and construction estimator. Generate a detailed Bill of Materials (BOM) for the following floor plan.
 
 Floor Plan Details:
 - Total rooms: ${detectedRooms.length}
-- Total area: ${totalArea.toFixed(1)} sqm
+- Total area: ${totalArea.toFixed(1)} sqm${floorSection}
 - Budget tier: ${input.budgetTier} (economy / mid_range / luxury)
 - Currency: ${input.currency}
 
 Rooms:
-${roomSummary.map((r: any) => `- ${r.name} (${r.type}): ${r.lengthM}m × ${r.widthM}m = ${r.areaSqm} sqm, ${r.doors} doors, ${r.windows} windows`).join('\n')}
+${roomSummary.map((r: any) => `- ${hasFloors ? `[${r.floor}] ` : ''}${r.name} (${r.type}): ${r.lengthM}m × ${r.widthM}m = ${r.areaSqm} sqm, ${r.doors} doors, ${r.windows} windows`).join('\n')}
 
 For EACH room, generate items covering: Flooring, Wall Paint/Finishes, Ceiling, Electrical (points, wiring), Plumbing (for bathrooms/kitchens), Doors, Windows.
 
@@ -299,6 +309,7 @@ Calculate quantities from actual room dimensions:
 - Include waste factors: tiles 8%, paint 10%, plywood 8%
 
 Use realistic ${input.currency} prices for ${input.budgetTier} tier.
+${hasFloors ? `Include the floor name in each item name, e.g. "Flooring Tiles - Living Room (Ground Floor)"` : ''}
 
 Return ONLY valid JSON:
 {"items":[{"name":"Item name - Room name","category":"Category","specification":"Short spec under 40 chars","quantity":10.5,"unit":"sqm","unitPrice":700,"wasteFactor":0.08,"total":7938}],"totalCost":50000,"currency":"${input.currency}"}

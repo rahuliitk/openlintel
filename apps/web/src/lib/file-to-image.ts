@@ -10,9 +10,9 @@ async function ensureTmpDir() {
   await mkdir(TMP_DIR, { recursive: true });
 }
 
-function exec(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+function exec(cmd: string, args: string[], timeoutMs = 30000): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 30000 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) reject(new Error(`${cmd} failed: ${stderr || err.message}`));
       else resolve({ stdout, stderr });
     });
@@ -63,6 +63,40 @@ async function pdfToPng(buffer: Buffer): Promise<Buffer> {
 }
 
 /**
+ * Convert a PDF buffer to PNG image buffers for ALL pages.
+ * Returns one buffer per page, sorted by page number.
+ */
+async function pdfToAllPagePngs(buffer: Buffer): Promise<Buffer[]> {
+  await ensureTmpDir();
+  const id = randomUUID();
+  const pdfPath = join(TMP_DIR, `${id}.pdf`);
+  const outPrefix = join(TMP_DIR, id);
+
+  try {
+    await writeFile(pdfPath, buffer);
+    await exec('pdftoppm', ['-png', '-r', '200', pdfPath, outPrefix]);
+
+    const { readdir } = await import('fs/promises');
+    const files = await readdir(TMP_DIR);
+    const pageFiles = files
+      .filter((f) => f.startsWith(id) && f.endsWith('.png'))
+      .sort();
+
+    const buffers: Buffer[] = [];
+    for (const file of pageFiles) {
+      const filePath = join(TMP_DIR, file);
+      buffers.push(await readFile(filePath));
+      await unlink(filePath).catch(() => {});
+    }
+
+    if (buffers.length === 0) throw new Error('pdftoppm produced no output pages');
+    return buffers;
+  } finally {
+    await unlink(pdfPath).catch(() => {});
+  }
+}
+
+/**
  * Convert a DXF or DWG buffer to a PNG image buffer.
  * Uses the Python dxf2png.py script with ezdxf + matplotlib.
  */
@@ -75,7 +109,9 @@ async function cadToPng(buffer: Buffer, extension: string): Promise<Buffer> {
 
   try {
     await writeFile(inputPath, buffer);
-    await exec('python3', [scriptPath, inputPath, outputPath]);
+    // DWG files need extra time: dwg2dxf conversion + ezdxf rendering
+    const timeout = extension === 'dwg' ? 120000 : 60000;
+    await exec('python3', [scriptPath, inputPath, outputPath], timeout);
     const png = await readFile(outputPath);
     return png;
   } finally {
@@ -119,4 +155,37 @@ export async function fileToImageBuffer(
   }
 
   throw new Error(`Unsupported file type for floor plan analysis: ${ext} (${mimeType})`);
+}
+
+/**
+ * Convert any supported file buffer to PNG image buffers for ALL pages.
+ * PDFs produce one buffer per page; images/CAD files produce a single buffer.
+ */
+export async function fileToAllImageBuffers(
+  buffer: Buffer,
+  mimeType: string,
+  filename: string,
+): Promise<Array<{ imageBuffer: Buffer; imageMimeType: string; pageIndex: number }>> {
+  const ext = (filename.split('.').pop() || '').toLowerCase();
+
+  if (mimeType.startsWith('image/') && !['dwg', 'dxf'].includes(ext)) {
+    return [{ imageBuffer: buffer, imageMimeType: mimeType, pageIndex: 0 }];
+  }
+
+  if (mimeType === 'application/pdf' || ext === 'pdf') {
+    const pages = await pdfToAllPagePngs(buffer);
+    return pages.map((png, i) => ({ imageBuffer: png, imageMimeType: 'image/png', pageIndex: i }));
+  }
+
+  if (ext === 'dxf') {
+    const png = await cadToPng(buffer, 'dxf');
+    return [{ imageBuffer: png, imageMimeType: 'image/png', pageIndex: 0 }];
+  }
+
+  if (ext === 'dwg') {
+    const png = await cadToPng(buffer, 'dwg');
+    return [{ imageBuffer: png, imageMimeType: 'image/png', pageIndex: 0 }];
+  }
+
+  throw new Error(`Unsupported file type: ${ext} (${mimeType})`);
 }

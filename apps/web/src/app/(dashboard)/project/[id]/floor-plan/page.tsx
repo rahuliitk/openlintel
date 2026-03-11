@@ -52,11 +52,13 @@ import {
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
 
 /** Returns the best image URL for displaying an upload (handles PDF/CAD previews). */
-function getUploadImageUrl(upload: { storageKey: string; mimeType?: string | null }): string {
-  if (upload.mimeType?.startsWith('image/')) {
+function getUploadImageUrl(upload: { storageKey: string; mimeType?: string | null; filename?: string | null }): string {
+  const ext = (upload.storageKey.split('.').pop() || '').toLowerCase();
+  // Real images: serve directly. DWG/DXF may report image/* MIME types but aren't renderable.
+  if (upload.mimeType?.startsWith('image/') && !['dwg', 'dxf'].includes(ext)) {
     return `/api/uploads/${encodeURIComponent(upload.storageKey)}`;
   }
-  // Non-image: use the generated preview PNG
+  // Non-image (PDF/CAD): use the generated preview PNG
   const previewKey = upload.storageKey.replace(/\.[^.]+$/, '_preview.png');
   return `/api/uploads/${encodeURIComponent(previewKey)}`;
 }
@@ -72,13 +74,196 @@ function storageKeyToImageUrl(storageKey: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Digitization results panel — shows detected rooms after floor plan digitization
+// Room colors
 // ---------------------------------------------------------------------------
 
 const ROOM_COLORS = [
   '#3b82f6', '#22c55e', '#f97316', '#a855f7', '#ec4899',
   '#06b6d4', '#eab308', '#ef4444', '#14b8a6', '#8b5cf6',
 ];
+
+// ---------------------------------------------------------------------------
+// Simple Floor Plan SVG — clean rectangles with thin borders, room labels,
+// and small door/window indicators. Matches the actual floor plan layout.
+// ---------------------------------------------------------------------------
+
+function FloorPlanSVG({ floor, floorIndex }: { floor: any; floorIndex: number }) {
+  const rooms: any[] = floor.rooms || [];
+  if (rooms.length === 0) {
+    return <p className="text-sm text-muted-foreground italic">No rooms detected for this floor.</p>;
+  }
+
+  const wallT = floor.wallThicknessMm || 150;
+  const stroke = Math.max(20, wallT * 0.4); // thin wall stroke
+
+  // Calculate overall bounding box from rooms
+  let overallW = 0;
+  let overallH = 0;
+  for (const r of rooms) {
+    const right = (r.x || 0) + (r.lengthMm || 0);
+    const bottom = (r.y || 0) + (r.widthMm || 0);
+    if (right > overallW) overallW = right;
+    if (bottom > overallH) overallH = bottom;
+  }
+  if (overallW === 0) overallW = 10000;
+  if (overallH === 0) overallH = 8000;
+
+  // Small padding around the plan
+  const pad = Math.max(overallW, overallH) * 0.05;
+  const svgW = overallW + pad * 2;
+  const svgH = overallH + pad * 2;
+
+  // Font sizes proportional to plan size
+  const baseFontSize = Math.max(100, Math.min(300, overallW * 0.02));
+
+  return (
+    <svg
+      viewBox={`0 0 ${svgW} ${svgH}`}
+      className="w-full rounded-lg border bg-white dark:bg-gray-950"
+      style={{ maxHeight: '520px' }}
+    >
+      {/* Room rectangles — fill + border */}
+      {rooms.map((room: any, i: number) => {
+        const rx = pad + (room.x || 0);
+        const ry = pad + (room.y || 0);
+        const rw = room.lengthMm || 3000;
+        const rh = room.widthMm || 3000;
+        const color = ROOM_COLORS[i % ROOM_COLORS.length];
+
+        return (
+          <rect
+            key={`room-${i}`}
+            x={rx}
+            y={ry}
+            width={rw}
+            height={rh}
+            fill={`${color}15`}
+            stroke="#1f2937"
+            strokeWidth={stroke}
+          />
+        );
+      })}
+
+      {/* Door indicators — small brown gap marks on walls */}
+      {rooms.map((room: any, ri: number) =>
+        (room.doors || []).map((door: any, di: number) => {
+          const rx = pad + (room.x || 0);
+          const ry = pad + (room.y || 0);
+          const rw = room.lengthMm || 3000;
+          const rh = room.widthMm || 3000;
+          const doorW = door.widthMm || 900;
+          const markStroke = stroke * 2.5;
+
+          // Center the door on the specified wall
+          switch (door.wallSide) {
+            case 'top': {
+              const cx = rx + rw / 2;
+              return <line key={`d-${ri}-${di}`} x1={cx - doorW / 2} y1={ry} x2={cx + doorW / 2} y2={ry} stroke="#92400e" strokeWidth={markStroke} />;
+            }
+            case 'bottom': {
+              const cx = rx + rw / 2;
+              return <line key={`d-${ri}-${di}`} x1={cx - doorW / 2} y1={ry + rh} x2={cx + doorW / 2} y2={ry + rh} stroke="#92400e" strokeWidth={markStroke} />;
+            }
+            case 'left': {
+              const cy = ry + rh / 2;
+              return <line key={`d-${ri}-${di}`} x1={rx} y1={cy - doorW / 2} x2={rx} y2={cy + doorW / 2} stroke="#92400e" strokeWidth={markStroke} />;
+            }
+            case 'right': {
+              const cy = ry + rh / 2;
+              return <line key={`d-${ri}-${di}`} x1={rx + rw} y1={cy - doorW / 2} x2={rx + rw} y2={cy + doorW / 2} stroke="#92400e" strokeWidth={markStroke} />;
+            }
+            default:
+              return null;
+          }
+        }),
+      )}
+
+      {/* Window indicators — small blue marks on walls */}
+      {rooms.map((room: any, ri: number) =>
+        (room.windows || []).map((win: any, wi: number) => {
+          const rx = pad + (room.x || 0);
+          const ry = pad + (room.y || 0);
+          const rw = room.lengthMm || 3000;
+          const rh = room.widthMm || 3000;
+          const winW = win.widthMm || 1200;
+          const markStroke = stroke * 2;
+
+          switch (win.wallSide) {
+            case 'top': {
+              const cx = rx + rw / 2;
+              return <line key={`w-${ri}-${wi}`} x1={cx - winW / 2} y1={ry} x2={cx + winW / 2} y2={ry} stroke="#3b82f6" strokeWidth={markStroke} />;
+            }
+            case 'bottom': {
+              const cx = rx + rw / 2;
+              return <line key={`w-${ri}-${wi}`} x1={cx - winW / 2} y1={ry + rh} x2={cx + winW / 2} y2={ry + rh} stroke="#3b82f6" strokeWidth={markStroke} />;
+            }
+            case 'left': {
+              const cy = ry + rh / 2;
+              return <line key={`w-${ri}-${wi}`} x1={rx} y1={cy - winW / 2} x2={rx} y2={cy + winW / 2} stroke="#3b82f6" strokeWidth={markStroke} />;
+            }
+            case 'right': {
+              const cy = ry + rh / 2;
+              return <line key={`w-${ri}-${wi}`} x1={rx + rw} y1={cy - winW / 2} x2={rx + rw} y2={cy + winW / 2} stroke="#3b82f6" strokeWidth={markStroke} />;
+            }
+            default:
+              return null;
+          }
+        }),
+      )}
+
+      {/* Room labels — name, area, dimensions centered in each room */}
+      {rooms.map((room: any, i: number) => {
+        const rx = pad + (room.x || 0);
+        const ry = pad + (room.y || 0);
+        const rw = room.lengthMm || 3000;
+        const rh = room.widthMm || 3000;
+        const cx = rx + rw / 2;
+        const cy = ry + rh / 2;
+        const color = ROOM_COLORS[i % ROOM_COLORS.length];
+
+        // Scale font to fit inside room
+        const roomMin = Math.min(rw, rh);
+        const nameFontSize = Math.max(70, Math.min(baseFontSize, roomMin * 0.12));
+        const subFontSize = nameFontSize * 0.7;
+
+        return (
+          <g key={`label-${i}`}>
+            <text x={cx} y={cy - nameFontSize * 0.3} fill={color} fontSize={nameFontSize} fontWeight="600" textAnchor="middle" dominantBaseline="middle">
+              {room.name || room.type?.replace(/_/g, ' ')}
+            </text>
+            {room.areaSqm ? (
+              <text x={cx} y={cy + subFontSize * 0.6} fill="#6b7280" fontSize={subFontSize} textAnchor="middle" dominantBaseline="middle">
+                {room.areaSqm} sqm
+              </text>
+            ) : null}
+            {room.lengthMm && room.widthMm ? (
+              <text x={cx} y={cy + subFontSize * 0.6 + subFontSize * 1.1} fill="#9ca3af" fontSize={subFontSize * 0.85} textAnchor="middle" dominantBaseline="middle">
+                {(room.lengthMm / 1000).toFixed(1)}m x {(room.widthMm / 1000).toFixed(1)}m
+              </text>
+            ) : null}
+          </g>
+        );
+      })}
+
+      {/* Overall dimensions text at bottom-right */}
+      <text
+        x={svgW - pad * 0.5}
+        y={svgH - pad * 0.3}
+        fill="#6b7280"
+        fontSize={baseFontSize * 0.6}
+        textAnchor="end"
+        dominantBaseline="auto"
+      >
+        {(overallW / 1000).toFixed(1)}m x {(overallH / 1000).toFixed(1)}m
+      </text>
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Digitization results panel — shows detected rooms after floor plan digitization
+// Supports both new multi-floor format and old polygon format
+// ---------------------------------------------------------------------------
 
 function DigitizationResultsPanel({
   job,
@@ -91,12 +276,35 @@ function DigitizationResultsPanel({
 }) {
   const output = job.outputJson as any;
   const inputData = job.inputJson as any;
-  const rooms = output?.detectedRooms || output?.rooms || [];
-  const summary = output?.summary;
-  const width = output?.width || 800;
-  const height = output?.height || 600;
   const storageKey = output?.storageKey || inputData?.storageKey;
   const imageUrl = storageKey ? storageKeyToImageUrl(storageKey) : null;
+
+  // Detect format: new (floors array) vs old (detectedRooms with polygon)
+  const floors: any[] = output?.floors || [];
+  const isNewFormat = floors.length > 0 && floors[0]?.rooms?.length > 0;
+
+  // For old format, convert to a single floor
+  const legacyRooms = output?.detectedRooms || output?.rooms || [];
+  const effectiveFloors = isNewFormat
+    ? floors
+    : legacyRooms.length > 0
+      ? [{
+          floorName: 'Floor Plan',
+          rooms: legacyRooms,
+          overallLengthMm: output?.width || 800,
+          overallWidthMm: output?.height || 600,
+          wallThicknessMm: 150,
+          summary: output?.summary,
+        }]
+      : [];
+
+  const summary = output?.summary;
+  const totalRooms = effectiveFloors.reduce((s: number, f: any) => s + (f.rooms?.length || 0), 0);
+
+  // Floor tab state
+  const [activeFloorIdx, setActiveFloorIdx] = useState(0);
+  const activeFloor = effectiveFloors[activeFloorIdx] || effectiveFloors[0];
+  const activeRooms = activeFloor?.rooms || [];
 
   return (
     <div className="space-y-4">
@@ -104,7 +312,8 @@ function DigitizationResultsPanel({
         <div>
           <h3 className="text-lg font-semibold">Digitization Results</h3>
           <p className="text-sm text-muted-foreground">
-            {rooms.length} room{rooms.length !== 1 ? 's' : ''} detected
+            {totalRooms} room{totalRooms !== 1 ? 's' : ''} detected
+            {effectiveFloors.length > 1 ? ` across ${effectiveFloors.length} floors` : ''}
             {summary?.totalAreaSqm ? ` — ${summary.totalAreaSqm} sqm total` : ''}
           </p>
         </div>
@@ -133,64 +342,47 @@ function DigitizationResultsPanel({
         </Card>
       )}
 
-      {/* SVG floor plan visualization */}
-      <Card>
-        <CardContent className="p-4">
-          <p className="mb-2 text-xs font-medium text-muted-foreground">Detected Room Layout</p>
-          <svg
-            viewBox={`0 0 ${width} ${height}`}
-            className="w-full rounded-lg border bg-white dark:bg-gray-950"
-            style={{ maxHeight: '400px' }}
-          >
-            {/* Room polygons */}
-            {rooms.map((room: any, i: number) => {
-              const color = ROOM_COLORS[i % ROOM_COLORS.length];
-              const polygon = room.polygon || [];
-              if (polygon.length === 0) return null;
-              const points = polygon.map((p: any) => `${p.x},${p.y}`).join(' ');
-              const cx = polygon.reduce((s: number, p: any) => s + p.x, 0) / polygon.length;
-              const cy = polygon.reduce((s: number, p: any) => s + p.y, 0) / polygon.length;
+      {/* Floor tabs (for multi-floor plans) */}
+      {effectiveFloors.length > 1 && (
+        <div className="flex gap-1 rounded-lg bg-muted p-1">
+          {effectiveFloors.map((floor: any, idx: number) => (
+            <button
+              key={idx}
+              onClick={() => setActiveFloorIdx(idx)}
+              className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                idx === activeFloorIdx
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {floor.floorName || `Floor ${idx + 1}`}
+              <span className="ml-1 text-xs opacity-60">({floor.rooms?.length || 0})</span>
+            </button>
+          ))}
+        </div>
+      )}
 
-              return (
-                <g key={room.id || `room-${i}`}>
-                  <polygon
-                    points={points}
-                    fill={`${color}22`}
-                    stroke={color}
-                    strokeWidth="2"
-                  />
-                  <text
-                    x={cx}
-                    y={cy - 8}
-                    fill={color}
-                    fontSize="13"
-                    fontWeight="600"
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                  >
-                    {room.name || room.type}
-                  </text>
-                  <text
-                    x={cx}
-                    y={cy + 10}
-                    fill={color}
-                    fontSize="10"
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    opacity="0.7"
-                  >
-                    {room.areaSqm ? `${room.areaSqm} sqm` : ''}
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
-        </CardContent>
-      </Card>
+      {/* SVG floor plan visualization */}
+      {activeFloor && (
+        <Card>
+          <CardContent className="p-4">
+            <p className="mb-2 text-xs font-medium text-muted-foreground">
+              {activeFloor.floorName || 'Detected Room Layout'}
+              {activeFloor.summary?.floorPlanType ? ` — ${activeFloor.summary.floorPlanType}` : ''}
+            </p>
+            {isNewFormat ? (
+              <FloorPlanSVG floor={activeFloor} floorIndex={activeFloorIdx} />
+            ) : (
+              /* Legacy SVG rendering for old polygon-based format */
+              <LegacySVG rooms={legacyRooms} width={output?.width || 800} height={output?.height || 600} />
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Room list */}
       <div className="grid gap-2 sm:grid-cols-2">
-        {rooms.map((room: any, i: number) => {
+        {activeRooms.map((room: any, i: number) => {
           const color = ROOM_COLORS[i % ROOM_COLORS.length];
           return (
             <div
@@ -204,8 +396,8 @@ function DigitizationResultsPanel({
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium truncate">{room.name || `Room ${i + 1}`}</p>
                 <p className="text-xs text-muted-foreground">
-                  {room.type}
-                  {room.lengthMm && room.widthMm ? ` — ${(room.lengthMm / 1000).toFixed(1)}m × ${(room.widthMm / 1000).toFixed(1)}m` : ''}
+                  {room.type?.replace(/_/g, ' ')}
+                  {room.lengthMm && room.widthMm ? ` — ${(room.lengthMm / 1000).toFixed(1)}m x ${(room.widthMm / 1000).toFixed(1)}m` : ''}
                   {room.areaSqm ? ` — ${room.areaSqm} sqm` : ''}
                 </p>
               </div>
@@ -224,6 +416,46 @@ function DigitizationResultsPanel({
         })}
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Legacy SVG for old polygon-based format (backward compatibility)
+// ---------------------------------------------------------------------------
+
+function LegacySVG({ rooms, width, height }: { rooms: any[]; width: number; height: number }) {
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      className="w-full rounded-lg border bg-white dark:bg-gray-950"
+      style={{ maxHeight: '400px' }}
+    >
+      {rooms.map((room: any, i: number) => {
+        const color = ROOM_COLORS[i % ROOM_COLORS.length];
+        const polygon = room.polygon || [];
+        if (polygon.length === 0) return null;
+        const points = polygon.map((p: any) => `${p.x},${p.y}`).join(' ');
+        const cx = polygon.reduce((s: number, p: any) => s + p.x, 0) / polygon.length;
+        const cy = polygon.reduce((s: number, p: any) => s + p.y, 0) / polygon.length;
+
+        return (
+          <g key={room.id || `room-${i}`}>
+            <polygon
+              points={points}
+              fill={`${color}22`}
+              stroke={color}
+              strokeWidth="2"
+            />
+            <text x={cx} y={cy - 8} fill={color} fontSize="13" fontWeight="600" textAnchor="middle" dominantBaseline="middle">
+              {room.name || room.type}
+            </text>
+            <text x={cx} y={cy + 10} fill={color} fontSize="10" textAnchor="middle" dominantBaseline="middle" opacity="0.7">
+              {room.areaSqm ? `${room.areaSqm} sqm` : ''}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
   );
 }
 
