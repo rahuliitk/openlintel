@@ -1,0 +1,228 @@
+import { z } from 'zod';
+import { router, protectedProcedure } from '../init';
+import {
+  safetyChecklists, safetyIncidents, safetyTrainingRecords,
+  projects, eq, and,
+} from '@openlintel/db';
+
+export const safetyRouter = router({
+  // ═══════════════════════════════════════════════════════
+  // Safety Checklists
+  // ═══════════════════════════════════════════════════════
+
+  // ── List checklists ────────────────────────────────────
+  listChecklists: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      status: z.string().optional(),
+    }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const conditions = [eq(safetyChecklists.projectId, input.projectId)];
+      if (input.status) conditions.push(eq(safetyChecklists.status, input.status));
+
+      return ctx.db.query.safetyChecklists.findMany({
+        where: and(...conditions),
+        orderBy: (c, { desc }) => [desc(c.createdAt)],
+      });
+    }),
+
+  // ── Create checklist ───────────────────────────────────
+  createChecklist: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      phase: z.string().min(1),
+      templateName: z.string().min(1),
+      items: z.array(z.object({
+        item: z.string(),
+        checked: z.boolean(),
+        note: z.string().optional(),
+      })),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const [checklist] = await ctx.db.insert(safetyChecklists).values({
+        projectId: input.projectId,
+        phase: input.phase,
+        templateName: input.templateName,
+        items: input.items,
+        status: 'pending',
+      }).returning();
+      return checklist;
+    }),
+
+  // ── Complete checklist ─────────────────────────────────
+  completeChecklist: protectedProcedure
+    .input(z.object({
+      id: z.string(),
+      items: z.array(z.object({
+        item: z.string(),
+        checked: z.boolean(),
+        note: z.string().optional(),
+      })),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const checklist = await ctx.db.query.safetyChecklists.findFirst({
+        where: eq(safetyChecklists.id, input.id),
+        with: { project: true },
+      });
+      if (!checklist) throw new Error('Checklist not found');
+      if ((checklist.project as any).userId !== ctx.userId) throw new Error('Access denied');
+
+      const allChecked = input.items.every((item) => item.checked);
+
+      const [updated] = await ctx.db.update(safetyChecklists).set({
+        items: input.items,
+        completedBy: ctx.userId,
+        completedAt: new Date(),
+        status: allChecked ? 'completed' : 'incomplete',
+      }).where(eq(safetyChecklists.id, input.id)).returning();
+      return updated;
+    }),
+
+  // ═══════════════════════════════════════════════════════
+  // Safety Incidents
+  // ═══════════════════════════════════════════════════════
+
+  // ── List incidents ─────────────────────────────────────
+  listIncidents: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      severity: z.string().optional(),
+      status: z.string().optional(),
+    }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const conditions = [eq(safetyIncidents.projectId, input.projectId)];
+      if (input.severity) conditions.push(eq(safetyIncidents.severity, input.severity));
+      if (input.status) conditions.push(eq(safetyIncidents.status, input.status));
+
+      return ctx.db.query.safetyIncidents.findMany({
+        where: and(...conditions),
+        orderBy: (i, { desc }) => [desc(i.date)],
+      });
+    }),
+
+  // ── Report incident ────────────────────────────────────
+  reportIncident: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      incidentType: z.string().min(1),
+      severity: z.enum(['minor', 'moderate', 'serious', 'critical']).optional(),
+      date: z.date(),
+      description: z.string().min(1),
+      location: z.string().optional(),
+      witnesses: z.array(z.string()).optional(),
+      photoKeys: z.array(z.string()).optional(),
+      correctiveActions: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const [incident] = await ctx.db.insert(safetyIncidents).values({
+        projectId: input.projectId,
+        incidentType: input.incidentType,
+        severity: input.severity ?? 'minor',
+        date: input.date,
+        description: input.description,
+        location: input.location ?? null,
+        witnesses: input.witnesses ?? null,
+        photoKeys: input.photoKeys ?? null,
+        correctiveActions: input.correctiveActions ?? null,
+        reportedBy: ctx.userId,
+        status: 'reported',
+      }).returning();
+      return incident;
+    }),
+
+  // ── Update incident ────────────────────────────────────
+  updateIncident: protectedProcedure
+    .input(z.object({
+      id: z.string(),
+      status: z.enum(['reported', 'investigating', 'resolved', 'closed']).optional(),
+      correctiveActions: z.string().optional(),
+      photoKeys: z.array(z.string()).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const incident = await ctx.db.query.safetyIncidents.findFirst({
+        where: eq(safetyIncidents.id, input.id),
+        with: { project: true },
+      });
+      if (!incident) throw new Error('Incident not found');
+      if ((incident.project as any).userId !== ctx.userId) throw new Error('Access denied');
+
+      const { id, ...data } = input;
+      const [updated] = await ctx.db.update(safetyIncidents).set(data)
+        .where(eq(safetyIncidents.id, id)).returning();
+      return updated;
+    }),
+
+  // ═══════════════════════════════════════════════════════
+  // Safety Training Records
+  // ═══════════════════════════════════════════════════════
+
+  // ── List training records ──────────────────────────────
+  listTrainingRecords: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      trainingType: z.string().optional(),
+    }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const conditions = [eq(safetyTrainingRecords.projectId, input.projectId)];
+      if (input.trainingType) conditions.push(eq(safetyTrainingRecords.trainingType, input.trainingType));
+
+      return ctx.db.query.safetyTrainingRecords.findMany({
+        where: and(...conditions),
+        orderBy: (t, { desc }) => [desc(t.completedDate)],
+      });
+    }),
+
+  // ── Add training record ────────────────────────────────
+  addTrainingRecord: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      workerName: z.string().min(1),
+      trainingType: z.string().min(1),
+      certificationNumber: z.string().optional(),
+      completedDate: z.date(),
+      expirationDate: z.date().optional(),
+      documentKey: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const [record] = await ctx.db.insert(safetyTrainingRecords).values({
+        projectId: input.projectId,
+        workerName: input.workerName,
+        trainingType: input.trainingType,
+        certificationNumber: input.certificationNumber ?? null,
+        completedDate: input.completedDate,
+        expirationDate: input.expirationDate ?? null,
+        documentKey: input.documentKey ?? null,
+      }).returning();
+      return record;
+    }),
+});

@@ -18,10 +18,30 @@ import {
   offcutListings, offcutInquiries, projectGalleryEntries, contractorReferrals,
   developerApps, apiAccessTokens, apiRequestLogs, webhookSubscriptions,
   exchangeRates,
-  // Missing features
+  // Missing features (existing)
   qualityCheckpoints, punchListItems, handoverPackages,
   collaborationThreads, collaborationMessages,
   deliveryTracking, stylePreferences,
+  // Missing features (new A-L)
+  parametricRules, designTemplates, parametricHistory,
+  floorPlanCanvases, wallSegments, openings, staircases,
+  exteriorDesigns, cabinetLayouts, bathroomLayouts, kitchenBathLayouts, lightingFixtures,
+  lightingDesigns, materialBoards, renderJobs,
+  structuralAnalyses, siteAnalyses, energyModels, acousticAnalyses,
+  rfis, submittals, progressReports,
+  safetyChecklists, safetyIncidents, safetyTrainingRecords,
+  permits, inspections, documentVersions,
+  projectClients, selectionCategories, selections,
+  inspirationBoards, inspirationPins, walkthroughAnnotations,
+  contractTemplates, proposals, leads, leadActivities,
+  timeEntries, insuranceCertificates,
+  teams, teamMembers, projectAssignments,
+  spacePlans, complianceQueries, droneCaptures, lidarScans, smartHomePlans,
+  closetLayouts, theaterDesigns, outdoorDesigns, universalDesignChecks, multiUnitPlans,
+  drawingSetConfigs, specifications, asBuiltMarkups,
+  integrationConfigs, communicationPreferences, propertyValuations,
+  serviceBookings, sampleRequests,
+  marketBenchmarks, laborRates, postOccupancySurveys, lessonsLearned, designFeedback,
 } from './app';
 
 // ─── Auth Relations ──────────────────────────────────────────────────────────
@@ -409,4 +429,273 @@ export const deliveryTrackingRelations = relations(deliveryTracking, ({ one }) =
 
 export const stylePreferencesRelations = relations(stylePreferences, ({ one }) => ({
   project: one(projects, { fields: [stylePreferences.projectId], references: [projects.id] }),
+}));
+
+// ===========================================================================
+// NEW MISSING FEATURES RELATIONS (A–L)
+// ===========================================================================
+
+// A1. Parametric
+export const parametricRulesRelations = relations(parametricRules, ({ one }) => ({
+  project: one(projects, { fields: [parametricRules.projectId], references: [projects.id] }),
+}));
+export const designTemplatesRelations = relations(designTemplates, ({ one }) => ({
+  author: one(users, { fields: [designTemplates.authorId], references: [users.id] }),
+}));
+export const parametricHistoryRelations = relations(parametricHistory, ({ one }) => ({
+  project: one(projects, { fields: [parametricHistory.projectId], references: [projects.id] }),
+}));
+
+// A2. Floor Plan Editor
+export const floorPlanCanvasesRelations = relations(floorPlanCanvases, ({ one, many }) => ({
+  project: one(projects, { fields: [floorPlanCanvases.projectId], references: [projects.id] }),
+  walls: many(wallSegments),
+  staircases: many(staircases),
+}));
+export const wallSegmentsRelations = relations(wallSegments, ({ one, many }) => ({
+  canvas: one(floorPlanCanvases, { fields: [wallSegments.canvasId], references: [floorPlanCanvases.id] }),
+  room: one(rooms, { fields: [wallSegments.roomId], references: [rooms.id] }),
+  openings: many(openings),
+}));
+export const openingsRelations = relations(openings, ({ one }) => ({
+  wall: one(wallSegments, { fields: [openings.wallSegmentId], references: [wallSegments.id] }),
+}));
+export const staircasesRelations = relations(staircases, ({ one }) => ({
+  canvas: one(floorPlanCanvases, { fields: [staircases.canvasId], references: [floorPlanCanvases.id] }),
+}));
+
+// A3. Exterior
+export const exteriorDesignsRelations = relations(exteriorDesigns, ({ one }) => ({
+  project: one(projects, { fields: [exteriorDesigns.projectId], references: [projects.id] }),
+  job: one(jobs, { fields: [exteriorDesigns.jobId], references: [jobs.id] }),
+}));
+
+// A4. Kitchen & Bath
+export const cabinetLayoutsRelations = relations(cabinetLayouts, ({ one }) => ({
+  room: one(rooms, { fields: [cabinetLayouts.roomId], references: [rooms.id] }),
+}));
+export const bathroomLayoutsRelations = relations(bathroomLayouts, ({ one }) => ({
+  room: one(rooms, { fields: [bathroomLayouts.roomId], references: [rooms.id] }),
+}));
+
+// A4b. Kitchen & Bath Layouts (project-level)
+export const kitchenBathLayoutsRelations = relations(kitchenBathLayouts, ({ one }) => ({
+  project: one(projects, { fields: [kitchenBathLayouts.projectId], references: [projects.id] }),
+}));
+
+// A5. Lighting
+export const lightingDesignsRelations = relations(lightingDesigns, ({ one }) => ({
+  room: one(rooms, { fields: [lightingDesigns.roomId], references: [rooms.id] }),
+}));
+// A5b. Lighting Fixtures (project-level)
+export const lightingFixturesRelations = relations(lightingFixtures, ({ one }) => ({
+  project: one(projects, { fields: [lightingFixtures.projectId], references: [projects.id] }),
+  room: one(rooms, { fields: [lightingFixtures.roomId], references: [rooms.id] }),
+}));
+
+// A6. Material Boards
+export const materialBoardsRelations = relations(materialBoards, ({ one }) => ({
+  project: one(projects, { fields: [materialBoards.projectId], references: [projects.id] }),
+  room: one(rooms, { fields: [materialBoards.roomId], references: [rooms.id] }),
+}));
+
+// A7. Render Jobs
+export const renderJobsRelations = relations(renderJobs, ({ one }) => ({
+  project: one(projects, { fields: [renderJobs.projectId], references: [projects.id] }),
+  room: one(rooms, { fields: [renderJobs.roomId], references: [rooms.id] }),
+  job: one(jobs, { fields: [renderJobs.jobId], references: [jobs.id] }),
+}));
+
+// B. Structural & Engineering
+export const structuralAnalysesRelations = relations(structuralAnalyses, ({ one }) => ({
+  project: one(projects, { fields: [structuralAnalyses.projectId], references: [projects.id] }),
+  job: one(jobs, { fields: [structuralAnalyses.jobId], references: [jobs.id] }),
+}));
+export const siteAnalysesRelations = relations(siteAnalyses, ({ one }) => ({
+  project: one(projects, { fields: [siteAnalyses.projectId], references: [projects.id] }),
+}));
+export const energyModelsRelations = relations(energyModels, ({ one }) => ({
+  project: one(projects, { fields: [energyModels.projectId], references: [projects.id] }),
+  job: one(jobs, { fields: [energyModels.jobId], references: [jobs.id] }),
+}));
+export const acousticAnalysesRelations = relations(acousticAnalyses, ({ one }) => ({
+  project: one(projects, { fields: [acousticAnalyses.projectId], references: [projects.id] }),
+}));
+
+// C. Project Management
+export const rfisRelations = relations(rfis, ({ one }) => ({
+  project: one(projects, { fields: [rfis.projectId], references: [projects.id] }),
+  asker: one(users, { fields: [rfis.askedBy], references: [users.id] }),
+  relatedDrawing: one(drawingResults, { fields: [rfis.relatedDrawingId], references: [drawingResults.id] }),
+}));
+export const submittalsRelations = relations(submittals, ({ one }) => ({
+  project: one(projects, { fields: [submittals.projectId], references: [projects.id] }),
+  submittedProduct: one(products, { fields: [submittals.submittedProductId], references: [products.id] }),
+}));
+export const progressReportsRelations = relations(progressReports, ({ one }) => ({
+  project: one(projects, { fields: [progressReports.projectId], references: [projects.id] }),
+}));
+export const safetyChecklistsRelations = relations(safetyChecklists, ({ one }) => ({
+  project: one(projects, { fields: [safetyChecklists.projectId], references: [projects.id] }),
+}));
+export const safetyIncidentsRelations = relations(safetyIncidents, ({ one }) => ({
+  project: one(projects, { fields: [safetyIncidents.projectId], references: [projects.id] }),
+}));
+export const safetyTrainingRecordsRelations = relations(safetyTrainingRecords, ({ one }) => ({
+  project: one(projects, { fields: [safetyTrainingRecords.projectId], references: [projects.id] }),
+}));
+export const permitsRelations = relations(permits, ({ one, many }) => ({
+  project: one(projects, { fields: [permits.projectId], references: [projects.id] }),
+  inspections: many(inspections),
+}));
+export const inspectionsRelations = relations(inspections, ({ one }) => ({
+  permit: one(permits, { fields: [inspections.permitId], references: [permits.id] }),
+}));
+export const documentVersionsRelations = relations(documentVersions, ({ one }) => ({
+  project: one(projects, { fields: [documentVersions.projectId], references: [projects.id] }),
+}));
+
+// D. Client Experience
+export const projectClientsRelations = relations(projectClients, ({ one }) => ({
+  project: one(projects, { fields: [projectClients.projectId], references: [projects.id] }),
+  client: one(users, { fields: [projectClients.clientUserId], references: [users.id] }),
+}));
+export const selectionCategoriesRelations = relations(selectionCategories, ({ one, many }) => ({
+  project: one(projects, { fields: [selectionCategories.projectId], references: [projects.id] }),
+  selections: many(selections),
+}));
+export const selectionsRelations = relations(selections, ({ one }) => ({
+  project: one(projects, { fields: [selections.projectId], references: [projects.id] }),
+  category: one(selectionCategories, { fields: [selections.categoryId], references: [selectionCategories.id] }),
+  room: one(rooms, { fields: [selections.roomId], references: [rooms.id] }),
+  product: one(products, { fields: [selections.selectedProductId], references: [products.id] }),
+}));
+export const inspirationBoardsRelations = relations(inspirationBoards, ({ one, many }) => ({
+  project: one(projects, { fields: [inspirationBoards.projectId], references: [projects.id] }),
+  pins: many(inspirationPins),
+}));
+export const inspirationPinsRelations = relations(inspirationPins, ({ one }) => ({
+  board: one(inspirationBoards, { fields: [inspirationPins.boardId], references: [inspirationBoards.id] }),
+  user: one(users, { fields: [inspirationPins.userId], references: [users.id] }),
+}));
+export const walkthroughAnnotationsRelations = relations(walkthroughAnnotations, ({ one }) => ({
+  project: one(projects, { fields: [walkthroughAnnotations.projectId], references: [projects.id] }),
+  room: one(rooms, { fields: [walkthroughAnnotations.roomId], references: [rooms.id] }),
+  creator: one(users, { fields: [walkthroughAnnotations.createdBy], references: [users.id] }),
+}));
+
+// E. Business Operations
+export const contractTemplatesRelations = relations(contractTemplates, ({ one }) => ({
+  user: one(users, { fields: [contractTemplates.userId], references: [users.id] }),
+}));
+export const proposalsRelations = relations(proposals, ({ one }) => ({
+  project: one(projects, { fields: [proposals.projectId], references: [projects.id] }),
+  template: one(contractTemplates, { fields: [proposals.templateId], references: [contractTemplates.id] }),
+}));
+export const leadsRelations = relations(leads, ({ one, many }) => ({
+  user: one(users, { fields: [leads.userId], references: [users.id] }),
+  project: one(projects, { fields: [leads.projectId], references: [projects.id] }),
+  activities: many(leadActivities),
+}));
+export const leadActivitiesRelations = relations(leadActivities, ({ one }) => ({
+  lead: one(leads, { fields: [leadActivities.leadId], references: [leads.id] }),
+}));
+export const timeEntriesRelations = relations(timeEntries, ({ one }) => ({
+  user: one(users, { fields: [timeEntries.userId], references: [users.id] }),
+  project: one(projects, { fields: [timeEntries.projectId], references: [projects.id] }),
+}));
+export const teamsRelations = relations(teams, ({ one, many }) => ({
+  owner: one(users, { fields: [teams.userId], references: [users.id] }),
+  members: many(teamMembers),
+}));
+export const teamMembersRelations = relations(teamMembers, ({ one }) => ({
+  team: one(teams, { fields: [teamMembers.teamId], references: [teams.id] }),
+  user: one(users, { fields: [teamMembers.userId], references: [users.id] }),
+}));
+export const projectAssignmentsRelations = relations(projectAssignments, ({ one }) => ({
+  project: one(projects, { fields: [projectAssignments.projectId], references: [projects.id] }),
+  user: one(users, { fields: [projectAssignments.userId], references: [users.id] }),
+}));
+
+// F. Advanced Technology
+export const spacePlansRelations = relations(spacePlans, ({ one }) => ({
+  room: one(rooms, { fields: [spacePlans.roomId], references: [rooms.id] }),
+  job: one(jobs, { fields: [spacePlans.jobId], references: [jobs.id] }),
+}));
+export const complianceQueriesRelations = relations(complianceQueries, ({ one }) => ({
+  project: one(projects, { fields: [complianceQueries.projectId], references: [projects.id] }),
+  user: one(users, { fields: [complianceQueries.userId], references: [users.id] }),
+}));
+export const droneCapturesRelations = relations(droneCaptures, ({ one }) => ({
+  project: one(projects, { fields: [droneCaptures.projectId], references: [projects.id] }),
+}));
+export const lidarScansRelations = relations(lidarScans, ({ one }) => ({
+  project: one(projects, { fields: [lidarScans.projectId], references: [projects.id] }),
+}));
+export const smartHomePlansRelations = relations(smartHomePlans, ({ one }) => ({
+  project: one(projects, { fields: [smartHomePlans.projectId], references: [projects.id] }),
+}));
+
+// G. Specialized Design
+export const closetLayoutsRelations = relations(closetLayouts, ({ one }) => ({
+  room: one(rooms, { fields: [closetLayouts.roomId], references: [rooms.id] }),
+}));
+export const theaterDesignsRelations = relations(theaterDesigns, ({ one }) => ({
+  room: one(rooms, { fields: [theaterDesigns.roomId], references: [rooms.id] }),
+}));
+export const outdoorDesignsRelations = relations(outdoorDesigns, ({ one }) => ({
+  project: one(projects, { fields: [outdoorDesigns.projectId], references: [projects.id] }),
+}));
+export const universalDesignChecksRelations = relations(universalDesignChecks, ({ one }) => ({
+  project: one(projects, { fields: [universalDesignChecks.projectId], references: [projects.id] }),
+  room: one(rooms, { fields: [universalDesignChecks.roomId], references: [rooms.id] }),
+}));
+export const multiUnitPlansRelations = relations(multiUnitPlans, ({ one }) => ({
+  project: one(projects, { fields: [multiUnitPlans.projectId], references: [projects.id] }),
+}));
+
+// H. Reporting
+export const drawingSetConfigsRelations = relations(drawingSetConfigs, ({ one }) => ({
+  user: one(users, { fields: [drawingSetConfigs.userId], references: [users.id] }),
+}));
+export const specificationsRelations = relations(specifications, ({ one }) => ({
+  project: one(projects, { fields: [specifications.projectId], references: [projects.id] }),
+}));
+export const asBuiltMarkupsRelations = relations(asBuiltMarkups, ({ one }) => ({
+  drawingResult: one(drawingResults, { fields: [asBuiltMarkups.drawingResultId], references: [drawingResults.id] }),
+  creator: one(users, { fields: [asBuiltMarkups.createdBy], references: [users.id] }),
+}));
+
+// I. Integrations
+export const integrationConfigsRelations = relations(integrationConfigs, ({ one }) => ({
+  user: one(users, { fields: [integrationConfigs.userId], references: [users.id] }),
+}));
+export const communicationPreferencesRelations = relations(communicationPreferences, ({ one }) => ({
+  user: one(users, { fields: [communicationPreferences.userId], references: [users.id] }),
+}));
+export const propertyValuationsRelations = relations(propertyValuations, ({ one }) => ({
+  project: one(projects, { fields: [propertyValuations.projectId], references: [projects.id] }),
+}));
+
+// J. Marketplace
+export const serviceBookingsRelations = relations(serviceBookings, ({ one }) => ({
+  professional: one(contractors, { fields: [serviceBookings.professionalId], references: [contractors.id] }),
+  project: one(projects, { fields: [serviceBookings.projectId], references: [projects.id] }),
+  client: one(users, { fields: [serviceBookings.clientUserId], references: [users.id] }),
+}));
+export const sampleRequestsRelations = relations(sampleRequests, ({ one }) => ({
+  user: one(users, { fields: [sampleRequests.userId], references: [users.id] }),
+  project: one(projects, { fields: [sampleRequests.projectId], references: [projects.id] }),
+}));
+
+// L. Data & Intelligence
+export const postOccupancySurveysRelations = relations(postOccupancySurveys, ({ one }) => ({
+  project: one(projects, { fields: [postOccupancySurveys.projectId], references: [projects.id] }),
+}));
+export const lessonsLearnedRelations = relations(lessonsLearned, ({ one }) => ({
+  project: one(projects, { fields: [lessonsLearned.projectId], references: [projects.id] }),
+  user: one(users, { fields: [lessonsLearned.userId], references: [users.id] }),
+}));
+export const designFeedbackRelations = relations(designFeedback, ({ one }) => ({
+  designVariant: one(designVariants, { fields: [designFeedback.designVariantId], references: [designVariants.id] }),
 }));

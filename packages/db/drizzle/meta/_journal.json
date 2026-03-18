@@ -15,6 +15,20 @@
       "when": 1772568153744,
       "tag": "0001_fast_doctor_octopus",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1773857124780,
+      "tag": "0002_clammy_molecule_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1773861559579,
+      "tag": "0003_confused_paladin",
+      "breakpoints": true
     }
   ]
 }
