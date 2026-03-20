@@ -75,6 +75,8 @@ export default function SiteAnalysisPage({ params }: { params: Promise<{ id: str
   const utils = trpc.useUtils();
 
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [selectedAnalysis, setSelectedAnalysis] = useState<any>(null);
   const [analysisName, setAnalysisName] = useState('');
   const [analysisType, setAnalysisType] = useState('topography');
   const [soilType, setSoilType] = useState('unknown');
@@ -423,8 +425,16 @@ export default function SiteAnalysisPage({ params }: { params: Promise<{ id: str
                     <p className="text-sm text-muted-foreground line-clamp-2">{analysis.notes}</p>
                   )}
                   <div className="flex items-center gap-2 pt-1">
-                    {analysis.status === 'completed' && (
-                      <Button variant="outline" size="sm" className="flex-1">
+                    {(analysis.status === 'completed' || analysis.status === 'warning' || analysis.status === 'critical') && analysis.results && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => {
+                          setSelectedAnalysis(analysis);
+                          setReportOpen(true);
+                        }}
+                      >
                         <Eye className="mr-1 h-3.5 w-3.5" />
                         View Report
                       </Button>
@@ -457,6 +467,133 @@ export default function SiteAnalysisPage({ params }: { params: Promise<{ id: str
           </Button>
         </Card>
       )}
+
+      {/* ── Report Dialog ──────────────────────────────────────── */}
+      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Eye className="h-5 w-5" />
+              {selectedAnalysis?.name ?? 'Analysis Report'}
+            </DialogTitle>
+            <DialogDescription>
+              {ANALYSIS_TYPES.find((at) => at.value === selectedAnalysis?.analysisType)?.label ?? selectedAnalysis?.analysisType}
+              {selectedAnalysis?.status && (
+                <Badge className={`ml-2 text-[10px] ${STATUS_COLORS[selectedAnalysis.status] || ''}`}>
+                  {selectedAnalysis.status}
+                </Badge>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-4 py-2 pr-2">
+            {selectedAnalysis?.results && (() => {
+              const r = selectedAnalysis.results;
+              return (
+                <>
+                  {/* Summary */}
+                  {r.summary && (
+                    <div className="rounded-lg border bg-muted/30 p-4">
+                      <p className="text-sm font-medium mb-1">Summary</p>
+                      <p className="text-sm text-muted-foreground">{r.summary}</p>
+                    </div>
+                  )}
+
+                  {/* Key Metrics */}
+                  <div className="grid grid-cols-2 gap-3">
+                    {Object.entries(r).map(([key, value]) => {
+                      if (['summary', 'recommendations', 'codeReferences', 'status'].includes(key)) return null;
+                      if (typeof value === 'object' && value !== null && !Array.isArray(value)) return null;
+                      if (Array.isArray(value) && key !== 'recommendations' && key !== 'codeReferences') {
+                        return (
+                          <div key={key} className="col-span-2 rounded-lg border p-3">
+                            <p className="text-xs font-medium text-muted-foreground mb-1">
+                              {key.replace(/([A-Z])/g, ' $1').replace(/^./, (s: string) => s.toUpperCase())}
+                            </p>
+                            <ul className="text-sm space-y-0.5">
+                              {(value as string[]).map((item: string, i: number) => (
+                                <li key={i} className="flex items-start gap-1.5">
+                                  <span className="text-muted-foreground mt-1.5 h-1 w-1 rounded-full bg-current flex-shrink-0" />
+                                  {String(item)}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        );
+                      }
+                      if (typeof value === 'object') return null;
+                      return (
+                        <div key={key} className="rounded-lg border p-3">
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {key.replace(/([A-Z])/g, ' $1').replace(/^./, (s: string) => s.toUpperCase())}
+                          </p>
+                          <p className="text-sm font-medium mt-0.5">{String(value)}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Nested objects (e.g. passiveSolarDesign, seasonalAnalysis) */}
+                  {Object.entries(r).map(([key, value]) => {
+                    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+                    if (['summary', 'recommendations', 'codeReferences', 'status'].includes(key)) return null;
+                    return (
+                      <div key={key} className="rounded-lg border p-3">
+                        <p className="text-xs font-semibold text-muted-foreground mb-2">
+                          {key.replace(/([A-Z])/g, ' $1').replace(/^./, (s: string) => s.toUpperCase())}
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {Object.entries(value as Record<string, unknown>).map(([k, v]) => (
+                            <div key={k}>
+                              <p className="text-[10px] text-muted-foreground">
+                                {k.replace(/([A-Z])/g, ' $1').replace(/^./, (s: string) => s.toUpperCase())}
+                              </p>
+                              <p className="text-xs font-medium">{String(v)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Recommendations */}
+                  {r.recommendations && Array.isArray(r.recommendations) && r.recommendations.length > 0 && (
+                    <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4">
+                      <p className="text-sm font-medium mb-2">Recommendations</p>
+                      <ul className="space-y-1.5">
+                        {r.recommendations.map((rec: string, i: number) => (
+                          <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                            <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-blue-500 flex-shrink-0" />
+                            {rec}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Code References */}
+                  {r.codeReferences && Array.isArray(r.codeReferences) && r.codeReferences.length > 0 && (
+                    <div className="rounded-lg border p-3">
+                      <p className="text-xs font-medium text-muted-foreground mb-1">Standards & Code References</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {r.codeReferences.map((ref: string, i: number) => (
+                          <Badge key={i} variant="outline" className="text-[10px]">
+                            {ref}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReportOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

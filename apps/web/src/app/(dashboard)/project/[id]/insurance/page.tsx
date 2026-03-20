@@ -144,8 +144,8 @@ export default function InsurancePage({ params }: { params: Promise<{ id: string
 
   // Group by party for matrix view
   const partiesMap = certificates.reduce((acc: Record<string, any[]>, cert: any) => {
-    if (!acc[cert.partyName]) acc[cert.partyName] = [];
-    acc[cert.partyName].push(cert);
+    if (!acc[cert.partyName ?? 'Unknown']) acc[cert.partyName ?? 'Unknown'] = [];
+    acc[cert.partyName ?? 'Unknown'].push(cert);
     return acc;
   }, {});
 

@@ -41,7 +41,7 @@ import {
   DoorOpen,
   Bath,
   CookingPot,
-  Stairs,
+  ArrowDown,
   Trash2,
 } from 'lucide-react';
 
@@ -52,7 +52,7 @@ const CHECK_CATEGORIES = [
   { value: 'circulation', label: 'Circulation & Hallways', icon: Home },
   { value: 'bathroom', label: 'Bathroom', icon: Bath },
   { value: 'kitchen', label: 'Kitchen', icon: CookingPot },
-  { value: 'stairs', label: 'Stairs & Ramps', icon: Stairs },
+  { value: 'stairs', label: 'Stairs & Ramps', icon: ArrowDown },
   { value: 'bedroom', label: 'Bedroom', icon: Home },
   { value: 'general', label: 'General Features', icon: Accessibility },
 ] as const;
@@ -297,7 +297,7 @@ export default function UniversalDesignPage({ params }: { params: Promise<{ id: 
                           </div>
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <Select value={check.status} onValueChange={(status) => updateStatus.mutate({ id: check.id, status })}>
+                          <Select value={check.status} onValueChange={(status: string) => updateStatus.mutate({ id: check.id, status: status as 'compliant' | 'partial' | 'non_compliant' | 'not_checked' })}>
                             <SelectTrigger className="w-[130px] h-7 text-[10px]">
                               <SelectValue />
                             </SelectTrigger>

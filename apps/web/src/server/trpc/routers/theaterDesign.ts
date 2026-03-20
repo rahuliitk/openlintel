@@ -1,10 +1,145 @@
 import { z } from 'zod';
 import { router, protectedProcedure } from '../init';
 import {
-  theaterDesigns, rooms, eq, and,
+  theaterDesigns, rooms, projects, eq, and, inArray,
 } from '@openlintel/db';
 
 export const theaterDesignRouter = router({
+  // ── List theater designs for a project ────────────────────
+  list: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      // Find all rooms for this project
+      const projectRooms = await ctx.db.query.rooms.findMany({
+        where: eq(rooms.projectId, input.projectId),
+      });
+      if (projectRooms.length === 0) return [];
+
+      const roomIds = projectRooms.map((r) => r.id);
+      const designs = await ctx.db.query.theaterDesigns.findMany({
+        where: inArray(theaterDesigns.roomId, roomIds),
+        orderBy: (t, { desc }) => [desc(t.createdAt)],
+      });
+
+      // Build a roomId -> room lookup
+      const roomMap = new Map(projectRooms.map((r) => [r.id, r]));
+
+      // Unpack the jsonb fields into the flat shape the frontend expects
+      return designs.map((d) => {
+        const room = roomMap.get(d.roomId);
+        const screen = (d.screenSpec as any) ?? {};
+        const speaker = (d.speakerLayout as any) ?? {};
+        const seating = (d.seatingLayout as any) ?? {};
+        return {
+          id: d.id,
+          name: screen.name ?? 'Theater Design',
+          roomWidthFt: room ? Math.round((room.widthMm ?? 0) / 304.8 * 10) / 10 : screen.roomWidthFt ?? null,
+          roomLengthFt: room ? Math.round((room.lengthMm ?? 0) / 304.8 * 10) / 10 : screen.roomLengthFt ?? null,
+          roomHeightFt: room ? Math.round((room.heightMm ?? 0) / 304.8 * 10) / 10 : screen.roomHeightFt ?? null,
+          displayType: screen.displayType ?? 'projector',
+          screenSize: screen.screenSize ?? null,
+          audioConfig: speaker.audioConfig ?? '5.1',
+          speakerCount: speaker.speakerCount ?? null,
+          seatingType: seating.seatingType ?? null,
+          seatCount: seating.seatCount ?? null,
+          notes: screen.notes ?? null,
+          createdAt: d.createdAt,
+        };
+      });
+    }),
+
+  // ── Create theater design for a project ───────────────────
+  create: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      name: z.string(),
+      roomWidthFt: z.number().optional(),
+      roomLengthFt: z.number().optional(),
+      roomHeightFt: z.number().optional(),
+      displayType: z.string(),
+      screenSize: z.number().optional(),
+      audioConfig: z.string(),
+      seatingType: z.string().optional(),
+      seatCount: z.number().optional(),
+      notes: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      // Find or create a room to attach this theater design to
+      let room = await ctx.db.query.rooms.findFirst({
+        where: and(eq(rooms.projectId, input.projectId), eq(rooms.type, 'theater')),
+      });
+      if (!room) {
+        const widthMm = input.roomWidthFt ? Math.round(input.roomWidthFt * 304.8) : null;
+        const lengthMm = input.roomLengthFt ? Math.round(input.roomLengthFt * 304.8) : null;
+        const heightMm = input.roomHeightFt ? Math.round(input.roomHeightFt * 304.8) : 2700;
+        const [newRoom] = await ctx.db.insert(rooms).values({
+          projectId: input.projectId,
+          name: input.name,
+          type: 'theater',
+          widthMm,
+          lengthMm,
+          heightMm,
+        }).returning();
+        room = newRoom;
+      }
+
+      // Pack fields into the jsonb columns
+      const screenSpec = {
+        name: input.name,
+        displayType: input.displayType,
+        screenSize: input.screenSize ?? null,
+        roomWidthFt: input.roomWidthFt ?? null,
+        roomLengthFt: input.roomLengthFt ?? null,
+        roomHeightFt: input.roomHeightFt ?? null,
+        notes: input.notes ?? null,
+      };
+      const speakerLayout = {
+        audioConfig: input.audioConfig,
+        speakerCount: input.audioConfig === '7.1' ? 8
+          : input.audioConfig === '5.1' ? 6
+          : input.audioConfig === '9.1.6' ? 16
+          : input.audioConfig === 'Atmos' ? 12
+          : 2,
+      };
+      const seatingLayout = {
+        seatingType: input.seatingType ?? null,
+        seatCount: input.seatCount ?? null,
+      };
+
+      const [design] = await ctx.db.insert(theaterDesigns).values({
+        roomId: room.id,
+        screenSpec,
+        speakerLayout,
+        seatingLayout,
+      }).returning();
+
+      return {
+        id: design.id,
+        name: input.name,
+        roomWidthFt: input.roomWidthFt ?? null,
+        roomLengthFt: input.roomLengthFt ?? null,
+        roomHeightFt: input.roomHeightFt ?? null,
+        displayType: input.displayType,
+        screenSize: input.screenSize ?? null,
+        audioConfig: input.audioConfig,
+        speakerCount: speakerLayout.speakerCount,
+        seatingType: input.seatingType ?? null,
+        seatCount: input.seatCount ?? null,
+        notes: input.notes ?? null,
+        createdAt: design.createdAt,
+      };
+    }),
+
   // ── Get theater design for a room ───────────────────────
   get: protectedProcedure
     .input(z.object({ roomId: z.string() }))

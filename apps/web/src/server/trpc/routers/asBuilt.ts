@@ -1,11 +1,74 @@
 import { z } from 'zod';
 import { router, protectedProcedure } from '../init';
 import {
-  asBuiltMarkups, drawingResults, eq, and,
+  asBuiltMarkups, asBuiltFieldMarkups, drawingResults, projects, eq, and, desc,
 } from '@openlintel/db';
 
 export const asBuiltRouter = router({
-  // ── List as-built markups ───────────────────────────────
+  // ── Project-level: list field markups ─────────────────────
+  listMarkups: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      return ctx.db.query.asBuiltFieldMarkups.findMany({
+        where: eq(asBuiltFieldMarkups.projectId, input.projectId),
+        orderBy: [desc(asBuiltFieldMarkups.createdAt)],
+      });
+    }),
+
+  // ── Project-level: create field markup ────────────────────
+  createMarkup: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      sheetNumber: z.string().min(1),
+      markupType: z.string().min(1),
+      discipline: z.string().optional(),
+      description: z.string().min(1),
+      originalValue: z.string().optional(),
+      asBuiltValue: z.string().optional(),
+      notes: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const [markup] = await ctx.db.insert(asBuiltFieldMarkups).values({
+        projectId: input.projectId,
+        userId: ctx.userId,
+        sheetNumber: input.sheetNumber,
+        markupType: input.markupType,
+        discipline: input.discipline || null,
+        description: input.description,
+        originalValue: input.originalValue || null,
+        asBuiltValue: input.asBuiltValue || null,
+        notes: input.notes || null,
+      }).returning();
+
+      return markup;
+    }),
+
+  // ── Project-level: delete field markup ────────────────────
+  deleteMarkup: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const markup = await ctx.db.query.asBuiltFieldMarkups.findFirst({
+        where: eq(asBuiltFieldMarkups.id, input.id),
+        with: { project: true },
+      });
+      if (!markup) throw new Error('Markup not found');
+      if ((markup.project as any).userId !== ctx.userId) throw new Error('Access denied');
+
+      await ctx.db.delete(asBuiltFieldMarkups).where(eq(asBuiltFieldMarkups.id, input.id));
+      return { success: true };
+    }),
+
+  // ── Drawing-level: list markups (original API) ────────────
   list: protectedProcedure
     .input(z.object({ drawingResultId: z.string() }))
     .query(async ({ ctx, input }) => {
@@ -21,20 +84,7 @@ export const asBuiltRouter = router({
       });
     }),
 
-  // ── Get by ID ───────────────────────────────────────────
-  byId: protectedProcedure
-    .input(z.object({ id: z.string() }))
-    .query(async ({ ctx, input }) => {
-      const markup = await ctx.db.query.asBuiltMarkups.findFirst({
-        where: eq(asBuiltMarkups.id, input.id),
-        with: { drawingResult: { with: { designVariant: { with: { room: { with: { project: true } } } } } } },
-      });
-      if (!markup) throw new Error('As-built markup not found');
-      if ((markup.drawingResult as any).designVariant.room.project.userId !== ctx.userId) throw new Error('Access denied');
-      return markup;
-    }),
-
-  // ── Create as-built markup ──────────────────────────────
+  // ── Drawing-level: create markup (original API) ───────────
   create: protectedProcedure
     .input(z.object({
       drawingResultId: z.string(),
@@ -59,27 +109,7 @@ export const asBuiltRouter = router({
       return markup;
     }),
 
-  // ── Update markup ───────────────────────────────────────
-  update: protectedProcedure
-    .input(z.object({
-      id: z.string(),
-      markupData: z.any().optional(),
-      deviations: z.any().optional(),
-      markedUpPdfKey: z.string().optional(),
-    }))
-    .mutation(async ({ ctx, input }) => {
-      const markup = await ctx.db.query.asBuiltMarkups.findFirst({
-        where: eq(asBuiltMarkups.id, input.id),
-        with: { drawingResult: { with: { designVariant: { with: { room: { with: { project: true } } } } } } },
-      });
-      if (!markup) throw new Error('As-built markup not found');
-      if ((markup.drawingResult as any).designVariant.room.project.userId !== ctx.userId) throw new Error('Access denied');
-      const { id, ...data } = input;
-      const [updated] = await ctx.db.update(asBuiltMarkups).set(data).where(eq(asBuiltMarkups.id, id)).returning();
-      return updated;
-    }),
-
-  // ── Delete markup ───────────────────────────────────────
+  // ── Drawing-level: delete markup (original API) ───────────
   delete: protectedProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
@@ -91,41 +121,5 @@ export const asBuiltRouter = router({
       if ((markup.drawingResult as any).designVariant.room.project.userId !== ctx.userId) throw new Error('Access denied');
       await ctx.db.delete(asBuiltMarkups).where(eq(asBuiltMarkups.id, input.id));
       return { success: true };
-    }),
-
-  // ── Get deviations summary ──────────────────────────────
-  getDeviations: protectedProcedure
-    .input(z.object({ drawingResultId: z.string() }))
-    .query(async ({ ctx, input }) => {
-      const drawing = await ctx.db.query.drawingResults.findFirst({
-        where: eq(drawingResults.id, input.drawingResultId),
-        with: { designVariant: { with: { room: { with: { project: true } } } } },
-      });
-      if (!drawing) throw new Error('Drawing result not found');
-      if ((drawing.designVariant as any).room.project.userId !== ctx.userId) throw new Error('Access denied');
-
-      const markups = await ctx.db.query.asBuiltMarkups.findMany({
-        where: eq(asBuiltMarkups.drawingResultId, input.drawingResultId),
-      });
-
-      const allDeviations: any[] = [];
-      markups.forEach((m) => {
-        const devs = (m.deviations as any[]) ?? [];
-        allDeviations.push(...devs);
-      });
-
-      const bySeverity: Record<string, number> = { critical: 0, major: 0, minor: 0 };
-      allDeviations.forEach((d) => {
-        const sev = d.severity ?? 'minor';
-        bySeverity[sev] = (bySeverity[sev] ?? 0) + 1;
-      });
-
-      return {
-        drawingResultId: input.drawingResultId,
-        totalMarkups: markups.length,
-        totalDeviations: allDeviations.length,
-        bySeverity,
-        deviations: allDeviations,
-      };
     }),
 });

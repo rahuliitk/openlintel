@@ -138,7 +138,7 @@ export default function CrmPage({ params }: { params: Promise<{ id: string }> })
   function moveToNextStage(leadId: string, currentStage: string) {
     const stageIndex = PIPELINE_STAGES.findIndex((s) => s.value === currentStage);
     if (stageIndex < PIPELINE_STAGES.length - 2) {
-      updateStage.mutate({ id: leadId, stage: PIPELINE_STAGES[stageIndex + 1].value });
+      updateStage.mutate({ id: leadId, stage: PIPELINE_STAGES[stageIndex + 1]!.value });
     }
   }
 

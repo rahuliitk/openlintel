@@ -1,53 +1,35 @@
 import { z } from 'zod';
 import { router, protectedProcedure } from '../init';
 import {
-  submittals, projects, eq, and,
+  submittalItems, projects, eq, and,
 } from '@openlintel/db';
 
 export const submittalRouter = router({
-  // ── List submittals ────────────────────────────────────
+  // ── List submittals for a project ────────────────────────────
   list: protectedProcedure
-    .input(z.object({
-      projectId: z.string(),
-      status: z.string().optional(),
-    }))
+    .input(z.object({ projectId: z.string() }))
     .query(async ({ ctx, input }) => {
       const project = await ctx.db.query.projects.findFirst({
         where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
       });
       if (!project) throw new Error('Project not found');
 
-      const conditions = [eq(submittals.projectId, input.projectId)];
-      if (input.status) conditions.push(eq(submittals.status, input.status));
-
-      return ctx.db.query.submittals.findMany({
-        where: and(...conditions),
+      return ctx.db.query.submittalItems.findMany({
+        where: eq(submittalItems.projectId, input.projectId),
         orderBy: (s, { desc }) => [desc(s.createdAt)],
       });
     }),
 
-  // ── Get submittal by ID ────────────────────────────────
-  byId: protectedProcedure
-    .input(z.object({ id: z.string() }))
-    .query(async ({ ctx, input }) => {
-      const submittal = await ctx.db.query.submittals.findFirst({
-        where: eq(submittals.id, input.id),
-        with: { project: true, submittedProduct: true },
-      });
-      if (!submittal) throw new Error('Submittal not found');
-      if ((submittal.project as any).userId !== ctx.userId) throw new Error('Access denied');
-      return submittal;
-    }),
-
-  // ── Create submittal with auto-increment submittalNumber
+  // ── Create a submittal ───────────────────────────────────────
   create: protectedProcedure
     .input(z.object({
       projectId: z.string(),
-      specSection: z.string().optional(),
-      description: z.string().min(1),
-      submittedProductId: z.string().optional(),
-      specifiedProductId: z.string().optional(),
-      pdfKey: z.string().optional(),
+      title: z.string().min(1),
+      specDivision: z.string().min(1),
+      contractor: z.string().optional(),
+      productName: z.string().min(1),
+      manufacturer: z.string().optional(),
+      description: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const project = await ctx.db.query.projects.findFirst({
@@ -55,50 +37,61 @@ export const submittalRouter = router({
       });
       if (!project) throw new Error('Project not found');
 
-      // Auto-increment submittalNumber by counting existing submittals for this project
-      const existingSubmittals = await ctx.db.query.submittals.findMany({
-        where: eq(submittals.projectId, input.projectId),
+      // Auto-increment submittalNumber
+      const existing = await ctx.db.query.submittalItems.findMany({
+        where: eq(submittalItems.projectId, input.projectId),
       });
-      const nextSubmittalNumber = existingSubmittals.length + 1;
+      const nextNumber = existing.length + 1;
 
-      const [submittal] = await ctx.db.insert(submittals).values({
+      const [submittal] = await ctx.db.insert(submittalItems).values({
         projectId: input.projectId,
-        submittalNumber: nextSubmittalNumber,
-        specSection: input.specSection ?? null,
-        description: input.description,
-        submittedProductId: input.submittedProductId ?? null,
-        specifiedProductId: input.specifiedProductId ?? null,
-        pdfKey: input.pdfKey ?? null,
-        submittedBy: ctx.userId,
+        title: input.title,
+        submittalNumber: nextNumber,
+        specDivision: input.specDivision,
+        contractor: input.contractor ?? null,
+        productName: input.productName,
+        manufacturer: input.manufacturer ?? null,
+        description: input.description ?? null,
         status: 'pending',
       }).returning();
       return submittal;
     }),
 
-  // ── Review submittal (set status + stampType) ──────────
+  // ── Review a submittal (approve / revise / reject) ───────────
   review: protectedProcedure
     .input(z.object({
       id: z.string(),
-      status: z.enum(['approved', 'approved_as_noted', 'revise_and_resubmit', 'rejected']),
-      stampType: z.enum(['approved', 'approved_as_noted', 'revise_and_resubmit', 'rejected']),
-      reviewerNotes: z.string().optional(),
+      status: z.enum(['approved', 'approved_as_noted', 'revise_resubmit', 'rejected']),
+      reviewNotes: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const submittal = await ctx.db.query.submittals.findFirst({
-        where: eq(submittals.id, input.id),
+      const submittal = await ctx.db.query.submittalItems.findFirst({
+        where: eq(submittalItems.id, input.id),
         with: { project: true },
       });
       if (!submittal) throw new Error('Submittal not found');
       if ((submittal.project as any).userId !== ctx.userId) throw new Error('Access denied');
 
-      const [updated] = await ctx.db.update(submittals).set({
+      const [updated] = await ctx.db.update(submittalItems).set({
         status: input.status,
-        stampType: input.stampType,
-        reviewerNotes: input.reviewerNotes ?? null,
-        reviewedBy: ctx.userId,
+        reviewNotes: input.reviewNotes ?? null,
         reviewedAt: new Date(),
-        updatedAt: new Date(),
-      }).where(eq(submittals.id, input.id)).returning();
+      }).where(eq(submittalItems.id, input.id)).returning();
       return updated;
+    }),
+
+  // ── Delete a submittal ───────────────────────────────────────
+  delete: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const submittal = await ctx.db.query.submittalItems.findFirst({
+        where: eq(submittalItems.id, input.id),
+        with: { project: true },
+      });
+      if (!submittal) throw new Error('Submittal not found');
+      if ((submittal.project as any).userId !== ctx.userId) throw new Error('Access denied');
+
+      await ctx.db.delete(submittalItems).where(eq(submittalItems.id, input.id));
+      return { success: true };
     }),
 });

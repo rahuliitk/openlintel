@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, jsonb, real, boolean, vector, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, integer, doublePrecision, jsonb, real, boolean, vector, index } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { users } from './auth';
 
@@ -1429,21 +1429,41 @@ export const renderJobs = pgTable('render_jobs', {
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   roomId: text('room_id').references(() => rooms.id, { onDelete: 'set null' }),
   jobId: text('job_id').references(() => jobs.id, { onDelete: 'set null' }),
+  name: text('name'),
+  description: text('description'),
   renderType: text('render_type').notNull(),
+  quality: text('quality').default('standard'),
   resolution: text('resolution').notNull(),
   timeOfDay: text('time_of_day'),
   season: text('season'),
   cameraPosition: jsonb('camera_position'),
   sceneKey: text('scene_key'),
   outputKey: text('output_key'),
+  outputUrl: text('output_url'),
   samples: integer('samples').default(256),
-  status: text('status').default('pending'),
+  status: text('status').default('queued'),
   createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 });
 
 // ===========================================================================
 // MISSING FEATURES — B. STRUCTURAL & ENGINEERING
 // ===========================================================================
+
+export const structuralElements = pgTable('structural_elements', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  elementType: text('element_type').notNull(), // beam, column, foundation, wall, slab, roof_truss, retaining_wall
+  spanLength: real('span_length'), // feet
+  loadType: text('load_type'), // dead, live, wind, seismic, snow
+  loadValue: real('load_value'), // psf
+  material: text('material'),
+  notes: text('notes'),
+  status: text('status').default('pending'), // pending, analyzing, pass, fail, warning
+  recommendedSize: text('recommended_size'),
+  analysisResult: jsonb('analysis_result'), // detailed analysis output
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+});
 
 export const structuralAnalyses = pgTable('structural_analyses', {
   id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -1454,6 +1474,20 @@ export const structuralAnalyses = pgTable('structural_analyses', {
   standardsCited: jsonb('standards_cited'),
   status: text('status').default('completed'),
   jobId: text('job_id').references(() => jobs.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+});
+
+export const siteAnalysisItems = pgTable('site_analysis_items', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  analysisType: text('analysis_type').notNull(), // topography, solar, grading, wind, noise, soil, flood, setback
+  soilType: text('soil_type'),
+  elevation: real('elevation'), // feet
+  slopePercent: real('slope_percent'),
+  notes: text('notes'),
+  status: text('status').default('pending'), // pending, processing, completed, warning, critical
+  results: jsonb('results'), // AI-generated analysis results
   createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 });
 
@@ -1483,6 +1517,41 @@ export const energyModels = pgTable('energy_models', {
   recommendations: jsonb('recommendations'),
   solarPanelSpec: jsonb('solar_panel_spec'),
   jobId: text('job_id').references(() => jobs.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+});
+
+export const energyModelItems = pgTable('energy_model_items', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  modelType: text('model_type').notNull(),
+  rValue: real('r_value'),
+  windowWallRatio: real('window_wall_ratio'),
+  orientation: text('orientation'),
+  notes: text('notes'),
+  status: text('status').default('draft'),
+  result: jsonb('result'), // AI-generated simulation results
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+});
+
+export const acousticAssessments = pgTable('acoustic_assessments', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  assessmentType: text('assessment_type').notNull(),
+  sourceRoomId: text('source_room_id'),
+  receivingRoomId: text('receiving_room_id'),
+  sourceRoomName: text('source_room_name'),
+  receivingRoomName: text('receiving_room_name'),
+  roomUse: text('room_use'),
+  wallType: text('wall_type'),
+  notes: text('notes'),
+  status: text('status').default('pending'),
+  stcValue: integer('stc_value'),
+  iicValue: integer('iic_value'),
+  reverbTime: real('reverb_time'),
+  recommendation: text('recommendation'),
+  analysisResult: jsonb('analysis_result'),
   createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 });
 
@@ -1542,15 +1611,51 @@ export const submittals = pgTable('submittals', {
   updatedAt: timestamp('updated_at', { mode: 'date' }).defaultNow().notNull(),
 });
 
+export const submittalItems = pgTable('submittal_items', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  submittalNumber: integer('submittal_number').notNull(),
+  specDivision: text('spec_division').notNull(),
+  contractor: text('contractor'),
+  productName: text('product_name').notNull(),
+  manufacturer: text('manufacturer'),
+  description: text('description'),
+  status: text('status').notNull().default('pending'),
+  reviewNotes: text('review_notes'),
+  reviewedAt: timestamp('reviewed_at', { mode: 'date' }),
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+});
+
 export const progressReports = pgTable('progress_reports', {
   id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   reportType: text('report_type').notNull(),
-  periodStart: timestamp('period_start', { mode: 'date' }).notNull(),
-  periodEnd: timestamp('period_end', { mode: 'date' }).notNull(),
+  title: text('title').notNull().default(''),
+  status: text('status').notNull().default('draft'),
+  periodStart: timestamp('period_start', { mode: 'date' }),
+  periodEnd: timestamp('period_end', { mode: 'date' }),
+  overallProgress: integer('overall_progress'),
+  laborHours: doublePrecision('labor_hours'),
+  weatherDelayDays: integer('weather_delay_days').default(0),
+  photoCount: integer('photo_count').default(0),
+  summary: text('summary'),
   content: jsonb('content'),
   pdfKey: text('pdf_key'),
   emailedTo: jsonb('emailed_to'),
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+});
+
+export const safetyRecords = pgTable('safety_records', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  recordType: text('record_type').notNull().default('checklist'),
+  severity: text('severity').notNull().default('minor'),
+  phase: text('phase').notNull().default('framing'),
+  status: text('status').notNull().default('open'),
+  description: text('description'),
+  assignedTo: text('assigned_to'),
   createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 });
 
@@ -1600,10 +1705,13 @@ export const permits = pgTable('permits', {
   permitType: text('permit_type').notNull(),
   jurisdiction: text('jurisdiction'),
   applicationDate: timestamp('application_date', { mode: 'date' }),
+  submittedDate: timestamp('submitted_date', { mode: 'date' }),
   approvalDate: timestamp('approval_date', { mode: 'date' }),
   permitNumber: text('permit_number'),
-  status: text('status').notNull().default('not_applied'),
+  status: text('status').notNull().default('draft'),
   expirationDate: timestamp('expiration_date', { mode: 'date' }),
+  inspectorName: text('inspector_name'),
+  inspectorPhone: text('inspector_phone'),
   documents: jsonb('documents'),
   fees: real('fees'),
   notes: text('notes'),
@@ -1630,10 +1738,10 @@ export const documentVersions = pgTable('document_versions', {
   id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   documentType: text('document_type').notNull(),
-  documentNumber: text('document_number').notNull(),
+  documentNumber: text('document_number'),
   revision: text('revision').notNull(),
   title: text('title').notNull(),
-  fileKey: text('file_key').notNull(),
+  fileKey: text('file_key'),
   previousVersionId: text('previous_version_id'),
   status: text('status').notNull().default('current'),
   changesDescription: text('changes_description'),
@@ -1977,6 +2085,17 @@ export const specifications = pgTable('specifications', {
   updatedAt: timestamp('updated_at', { mode: 'date' }).defaultNow().notNull(),
 });
 
+export const specSections = pgTable('spec_sections', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  sectionNumber: text('section_number').notNull(),
+  title: text('title').notNull(),
+  division: text('division').notNull(),
+  content: text('content'),
+  status: text('status').default('draft'),
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+});
+
 export const asBuiltMarkups = pgTable('as_built_markups', {
   id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
   drawingResultId: text('drawing_result_id').notNull().references(() => drawingResults.id, { onDelete: 'cascade' }),
@@ -1984,6 +2103,21 @@ export const asBuiltMarkups = pgTable('as_built_markups', {
   deviations: jsonb('deviations'),
   markedUpPdfKey: text('marked_up_pdf_key'),
   createdBy: text('created_by').references(() => users.id),
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+});
+
+// Project-level as-built field markups
+export const asBuiltFieldMarkups = pgTable('as_built_field_markups', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  sheetNumber: text('sheet_number').notNull(),
+  markupType: text('markup_type').notNull(),
+  discipline: text('discipline'),
+  description: text('description').notNull(),
+  originalValue: text('original_value'),
+  asBuiltValue: text('as_built_value'),
+  notes: text('notes'),
   createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 });
 
@@ -2095,6 +2229,35 @@ export const lessonsLearned = pgTable('lessons_learned', {
   title: text('title').notNull(),
   description: text('description').notNull(),
   tags: jsonb('tags'),
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// Compliance Reports (persisted compliance check results)
+// ---------------------------------------------------------------------------
+export const complianceReports = pgTable('compliance_reports', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  jurisdiction: text('jurisdiction').notNull().default('IN'),
+  status: text('status').notNull().default('pending'), // pending, running, completed, failed
+  summary: jsonb('summary'), // { totalRooms, totalChecks, pass, fail, warning, complianceRate }
+  roomResults: jsonb('room_results'), // array of room results with checks
+  errorMessage: text('error_message'),
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { mode: 'date' }),
+});
+
+// ---------------------------------------------------------------------------
+// Compliance Chat Messages
+// ---------------------------------------------------------------------------
+export const complianceChatMessages = pgTable('compliance_chat_messages', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  role: text('role').notNull(), // 'user' | 'assistant'
+  content: text('content').notNull(),
+  citations: jsonb('citations'), // [{ code, section, text }]
   createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 });
 

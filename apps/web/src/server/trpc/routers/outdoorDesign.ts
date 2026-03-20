@@ -5,6 +5,96 @@ import {
 } from '@openlintel/db';
 
 export const outdoorDesignRouter = router({
+  // ── List zones (frontend-facing) ──────────────────────────
+  listZones: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+      const designs = await ctx.db.query.outdoorDesigns.findMany({
+        where: eq(outdoorDesigns.projectId, input.projectId),
+        orderBy: (d, { desc }) => [desc(d.createdAt)],
+      });
+      // Unpack jsonb into the flat shape the frontend expects
+      return designs.map((d) => {
+        const elems = (d.elements as any) ?? {};
+        const mats = (d.materials as any) ?? {};
+        return {
+          id: d.id,
+          name: elems.name ?? d.designType,
+          zoneType: d.designType,
+          areaSqft: elems.areaSqft ?? null,
+          material: mats.material ?? null,
+          estimatedCost: elems.estimatedCost ?? null,
+          description: elems.description ?? null,
+          features: elems.features ?? [],
+          createdAt: d.createdAt,
+        };
+      });
+    }),
+
+  // ── Create zone (frontend-facing) ─────────────────────────
+  createZone: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      name: z.string(),
+      zoneType: z.string(),
+      areaSqft: z.number().optional(),
+      material: z.string().optional(),
+      estimatedCost: z.number().optional(),
+      description: z.string().optional(),
+      features: z.array(z.string()).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+      const elements = {
+        name: input.name,
+        areaSqft: input.areaSqft ?? null,
+        description: input.description ?? null,
+        features: input.features ?? [],
+        estimatedCost: input.estimatedCost ?? null,
+      };
+      const materials = {
+        material: input.material ?? null,
+      };
+      const [design] = await ctx.db.insert(outdoorDesigns).values({
+        projectId: input.projectId,
+        designType: input.zoneType,
+        elements,
+        materials,
+      }).returning();
+      return {
+        id: design.id,
+        name: input.name,
+        zoneType: input.zoneType,
+        areaSqft: input.areaSqft ?? null,
+        material: input.material ?? null,
+        estimatedCost: input.estimatedCost ?? null,
+        description: input.description ?? null,
+        features: input.features ?? [],
+        createdAt: design.createdAt,
+      };
+    }),
+
+  // ── Delete zone (frontend-facing) ─────────────────────────
+  deleteZone: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const design = await ctx.db.query.outdoorDesigns.findFirst({
+        where: eq(outdoorDesigns.id, input.id),
+        with: { project: true },
+      });
+      if (!design) throw new Error('Outdoor design not found');
+      if ((design.project as any).userId !== ctx.userId) throw new Error('Access denied');
+      await ctx.db.delete(outdoorDesigns).where(eq(outdoorDesigns.id, input.id));
+      return { success: true };
+    }),
+
   // ── List outdoor designs ────────────────────────────────
   list: protectedProcedure
     .input(z.object({ projectId: z.string() }))

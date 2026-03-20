@@ -1,7 +1,8 @@
 'use client';
 
-import { use, useState } from 'react';
+import { use, useState, useCallback } from 'react';
 import { trpc } from '@/lib/trpc/client';
+import { jsPDF } from 'jspdf';
 import {
   Button,
   Card,
@@ -74,7 +75,7 @@ export default function MaterialBoardsPage({ params }: { params: Promise<{ id: s
   const [dialogOpen, setDialogOpen] = useState(false);
   const [boardName, setBoardName] = useState('');
   const [boardType, setBoardType] = useState('room');
-  const [roomId, setRoomId] = useState('');
+  const [roomId, setRoomId] = useState('__all__');
   const [materialCategory, setMaterialCategory] = useState('flooring');
   const [description, setDescription] = useState('');
 
@@ -98,21 +99,149 @@ export default function MaterialBoardsPage({ params }: { params: Promise<{ id: s
   const generateBoard = trpc.materialBoard.generate.useMutation({
     onSuccess: () => {
       utils.materialBoard.list.invalidate();
-      toast({ title: 'Board generated', description: 'AI has compiled the material board.' });
+      toast({ title: 'Board generated', description: 'AI has recommended materials for your board.' });
     },
     onError: (err) => {
+      utils.materialBoard.list.invalidate();
       toast({ title: 'Generation failed', description: err.message, variant: 'destructive' });
     },
   });
 
-  const exportBoard = trpc.materialBoard.export.useMutation({
-    onSuccess: () => {
-      toast({ title: 'Board exported', description: 'PDF download will start shortly.' });
-    },
-    onError: (err) => {
+  const [exporting, setExporting] = useState(false);
+
+  const exportBoardPdf = useCallback((board: any) => {
+    setExporting(true);
+    try {
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pageW = doc.internal.pageSize.getWidth();
+      const margin = 16;
+      let y = 20;
+
+      // ── Title ──
+      doc.setFontSize(22);
+      doc.setFont('helvetica', 'bold');
+      doc.text(board.name, margin, y);
+      y += 10;
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(120, 120, 120);
+      const subtitle = `${(board.boardType ?? '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())} · ${board.materialCount ?? 0} materials`;
+      doc.text(subtitle, margin, y);
+      y += 4;
+      if (board.description) {
+        const descLines = doc.splitTextToSize(board.description, pageW - margin * 2);
+        doc.text(descLines, margin, y);
+        y += descLines.length * 4 + 2;
+      }
+      doc.setTextColor(0, 0, 0);
+      y += 4;
+
+      // ── Swatches row ──
+      const swatches = (board.swatches ?? []) as string[];
+      if (swatches.length > 0) {
+        const swatchSize = 14;
+        const gap = 4;
+        swatches.slice(0, 6).forEach((hex: string, i: number) => {
+          const r = parseInt(hex.slice(1, 3), 16);
+          const g = parseInt(hex.slice(3, 5), 16);
+          const b = parseInt(hex.slice(5, 7), 16);
+          doc.setFillColor(r, g, b);
+          doc.roundedRect(margin + i * (swatchSize + gap), y, swatchSize, swatchSize, 2, 2, 'F');
+        });
+        y += 20;
+      }
+
+      // ── Materials table ──
+      const items = (board.items ?? []) as any[];
+      if (items.length > 0) {
+        // Header
+        doc.setFillColor(245, 245, 245);
+        doc.rect(margin, y, pageW - margin * 2, 8, 'F');
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Material', margin + 2, y + 5.5);
+        doc.text('Brand', margin + 60, y + 5.5);
+        doc.text('Finish', margin + 95, y + 5.5);
+        doc.text('Size', margin + 130, y + 5.5);
+        doc.text('Price', pageW - margin - 2, y + 5.5, { align: 'right' });
+        y += 10;
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8);
+
+        items.forEach((item: any) => {
+          if (y > 270) {
+            doc.addPage();
+            y = 20;
+          }
+
+          // Color swatch
+          if (item.color && item.color.startsWith('#')) {
+            const r = parseInt(item.color.slice(1, 3), 16);
+            const g = parseInt(item.color.slice(3, 5), 16);
+            const b = parseInt(item.color.slice(5, 7), 16);
+            doc.setFillColor(r, g, b);
+            doc.roundedRect(margin + 2, y - 2.5, 5, 5, 1, 1, 'F');
+          }
+
+          doc.text(String(item.name ?? '').substring(0, 30), margin + 10, y + 1);
+          doc.text(String(item.brand ?? '').substring(0, 18), margin + 60, y + 1);
+          doc.text(String(item.finish ?? '').substring(0, 18), margin + 95, y + 1);
+          doc.text(String(item.size ?? '').substring(0, 14), margin + 130, y + 1);
+          const price = typeof item.pricePerUnit === 'number'
+            ? `$${item.pricePerUnit.toFixed(2)}/${item.unit ?? 'unit'}`
+            : '';
+          doc.text(price, pageW - margin - 2, y + 1, { align: 'right' });
+
+          if (item.notes) {
+            y += 5;
+            doc.setTextColor(120, 120, 120);
+            doc.setFontSize(7);
+            const noteLines = doc.splitTextToSize(String(item.notes), pageW - margin * 2 - 10);
+            doc.text(noteLines, margin + 10, y + 1);
+            y += noteLines.length * 3;
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(8);
+          }
+
+          y += 7;
+
+          // Separator line
+          doc.setDrawColor(230, 230, 230);
+          doc.line(margin, y - 2, pageW - margin, y - 2);
+        });
+
+        // ── Total estimate ──
+        y += 4;
+        const totalEstimate = items.reduce((sum: number, it: any) => {
+          return sum + (typeof it.pricePerUnit === 'number' ? it.pricePerUnit : 0);
+        }, 0);
+        if (totalEstimate > 0) {
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9);
+          doc.text(`Estimated total (1 unit each): $${totalEstimate.toFixed(2)}`, margin, y + 1);
+        }
+      }
+
+      // ── Footer ──
+      const pageCount = doc.getNumberOfPages();
+      for (let p = 1; p <= pageCount; p++) {
+        doc.setPage(p);
+        doc.setFontSize(7);
+        doc.setTextColor(160, 160, 160);
+        doc.text(`OpenLintel · ${board.name} · Page ${p} of ${pageCount}`, margin, 290);
+        doc.text(new Date().toLocaleDateString(), pageW - margin, 290, { align: 'right' });
+      }
+
+      doc.save(`${board.name.replace(/[^a-zA-Z0-9]/g, '_')}_material_board.pdf`);
+      toast({ title: 'PDF downloaded', description: 'Material board exported successfully.' });
+    } catch (err: any) {
       toast({ title: 'Export failed', description: err.message, variant: 'destructive' });
-    },
-  });
+    } finally {
+      setExporting(false);
+    }
+  }, []);
 
   const shareBoard = trpc.materialBoard.share.useMutation({
     onSuccess: (data) => {
@@ -134,7 +263,7 @@ export default function MaterialBoardsPage({ params }: { params: Promise<{ id: s
   function resetForm() {
     setBoardName('');
     setBoardType('room');
-    setRoomId('');
+    setRoomId('__all__');
     setMaterialCategory('flooring');
     setDescription('');
   }
@@ -145,7 +274,7 @@ export default function MaterialBoardsPage({ params }: { params: Promise<{ id: s
       projectId,
       name: boardName,
       boardType,
-      roomId: roomId || undefined,
+      roomId: roomId && roomId !== '__all__' ? roomId : undefined,
       materialCategory,
       description: description || undefined,
     });
@@ -237,7 +366,7 @@ export default function MaterialBoardsPage({ params }: { params: Promise<{ id: s
                       <SelectValue placeholder="Select room" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">All rooms</SelectItem>
+                      <SelectItem value="__all__">All rooms</SelectItem>
                       {rooms.map((room: any) => (
                         <SelectItem key={room.id} value={room.id}>
                           {room.name}
@@ -388,7 +517,13 @@ export default function MaterialBoardsPage({ params }: { params: Promise<{ id: s
                       ) : (
                         <Wand2 className="mr-1 h-3.5 w-3.5" />
                       )}
-                      Generate
+                      {generateBoard.isPending ? 'Generating with AI...' : 'Generate'}
+                    </Button>
+                  )}
+                  {board.status === 'generating' && (
+                    <Button variant="outline" size="sm" className="flex-1" disabled>
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                      AI is generating...
                     </Button>
                   )}
                   {(board.status === 'ready' || board.status === 'approved') && (
@@ -396,8 +531,8 @@ export default function MaterialBoardsPage({ params }: { params: Promise<{ id: s
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => exportBoard.mutate({ id: board.id })}
-                        disabled={exportBoard.isPending}
+                        onClick={() => exportBoardPdf(board)}
+                        disabled={exporting}
                       >
                         <Download className="mr-1 h-3.5 w-3.5" />
                         PDF

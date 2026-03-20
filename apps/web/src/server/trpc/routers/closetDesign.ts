@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { router, protectedProcedure } from '../init';
 import {
-  closetLayouts, rooms, eq, and,
+  closetLayouts, rooms, projects, eq, and, inArray,
 } from '@openlintel/db';
 
 export const closetDesignRouter = router({
@@ -21,20 +21,148 @@ export const closetDesignRouter = router({
       });
     }),
 
-  // ── List all closet layouts for a room ──────────────────
+  // ── List all closet layouts for a project or room ───────
   list: protectedProcedure
-    .input(z.object({ roomId: z.string() }))
+    .input(z.object({
+      projectId: z.string().optional(),
+      roomId: z.string().optional(),
+    }))
     .query(async ({ ctx, input }) => {
-      const room = await ctx.db.query.rooms.findFirst({
-        where: eq(rooms.id, input.roomId),
-        with: { project: true },
+      if (input.roomId) {
+        const room = await ctx.db.query.rooms.findFirst({
+          where: eq(rooms.id, input.roomId),
+          with: { project: true },
+        });
+        if (!room) throw new Error('Room not found');
+        if ((room.project as any).userId !== ctx.userId) throw new Error('Access denied');
+        return ctx.db.query.closetLayouts.findMany({
+          where: eq(closetLayouts.roomId, input.roomId),
+          orderBy: (c, { desc }) => [desc(c.createdAt)],
+        });
+      }
+
+      if (input.projectId) {
+        const project = await ctx.db.query.projects.findFirst({
+          where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+        });
+        if (!project) throw new Error('Project not found');
+        // Get all rooms for this project, then get closet layouts
+        const projectRooms = await ctx.db.query.rooms.findMany({
+          where: eq(rooms.projectId, input.projectId),
+        });
+        if (projectRooms.length === 0) return [];
+        const roomIds = projectRooms.map((r) => r.id);
+        const layouts = await ctx.db.query.closetLayouts.findMany({
+          where: inArray(closetLayouts.roomId, roomIds),
+          orderBy: (c, { desc }) => [desc(c.createdAt)],
+        });
+        // Enrich with unpacked sections data for the frontend
+        return layouts.map((layout) => {
+          const sec = (layout.sections as any) ?? {};
+          return {
+            ...layout,
+            name: sec.name ?? layout.layoutType ?? 'Closet',
+            closetType: sec.closetType ?? layout.layoutType ?? null,
+            room: sec.room ?? null,
+            widthInches: sec.widthInches ?? null,
+            depthInches: sec.depthInches ?? null,
+            heightInches: sec.heightInches ?? null,
+            system: sec.system ?? null,
+            components: sec.components ?? null,
+            notes: sec.notes ?? null,
+          };
+        });
+      }
+
+      throw new Error('Either projectId or roomId is required');
+    }),
+
+  // ── Create closet layout by projectId ──────────────────
+  create: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      name: z.string(),
+      closetType: z.string(),
+      room: z.string().optional(),
+      widthInches: z.number().optional(),
+      depthInches: z.number().optional(),
+      heightInches: z.number().optional(),
+      system: z.string().optional(),
+      components: z.any().optional(),
+      notes: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
       });
-      if (!room) throw new Error('Room not found');
-      if ((room.project as any).userId !== ctx.userId) throw new Error('Access denied');
-      return ctx.db.query.closetLayouts.findMany({
-        where: eq(closetLayouts.roomId, input.roomId),
-        orderBy: (c, { desc }) => [desc(c.createdAt)],
-      });
+      if (!project) throw new Error('Project not found');
+
+      // Find or create a room to anchor the closet layout
+      let roomId: string;
+      if (input.room) {
+        // Try to find an existing room by name
+        const existingRoom = await ctx.db.query.rooms.findFirst({
+          where: and(eq(rooms.projectId, input.projectId), eq(rooms.name, input.room)),
+        });
+        if (existingRoom) {
+          roomId = existingRoom.id;
+        } else {
+          const [newRoom] = await ctx.db.insert(rooms).values({
+            projectId: input.projectId,
+            name: input.room,
+            type: 'closet',
+          }).returning();
+          roomId = newRoom!.id;
+        }
+      } else {
+        // Use a default "Closets" room
+        const defaultRoom = await ctx.db.query.rooms.findFirst({
+          where: and(eq(rooms.projectId, input.projectId), eq(rooms.name, 'Closets')),
+        });
+        if (defaultRoom) {
+          roomId = defaultRoom.id;
+        } else {
+          const [newRoom] = await ctx.db.insert(rooms).values({
+            projectId: input.projectId,
+            name: 'Closets',
+            type: 'closet',
+          }).returning();
+          roomId = newRoom!.id;
+        }
+      }
+
+      const sectionData = {
+        name: input.name,
+        closetType: input.closetType,
+        room: input.room ?? null,
+        widthInches: input.widthInches ?? null,
+        depthInches: input.depthInches ?? null,
+        heightInches: input.heightInches ?? null,
+        system: input.system ?? null,
+        components: input.components ?? null,
+        notes: input.notes ?? null,
+      };
+
+      const [layout] = await ctx.db.insert(closetLayouts).values({
+        roomId,
+        layoutType: input.closetType,
+        sections: sectionData,
+        accessories: null,
+        totalLinearFt: null,
+      }).returning();
+
+      return {
+        ...layout,
+        name: sectionData.name,
+        closetType: sectionData.closetType,
+        room: sectionData.room,
+        widthInches: sectionData.widthInches,
+        depthInches: sectionData.depthInches,
+        heightInches: sectionData.heightInches,
+        system: sectionData.system,
+        components: sectionData.components,
+        notes: sectionData.notes,
+      };
     }),
 
   // ── Save closet layout (upsert) ────────────────────────

@@ -83,6 +83,172 @@ export const universalDesignRouter = router({
       return result;
     }),
 
+  // ── List checks (unpacked from checkResults jsonb) ─────
+  listChecks: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+      const rows = await ctx.db.query.universalDesignChecks.findMany({
+        where: eq(universalDesignChecks.projectId, input.projectId),
+        orderBy: (c, { desc }) => [desc(c.createdAt)],
+      });
+      // Each row stores check data in checkResults; unpack into individual items
+      return rows.map((row) => {
+        const results = (row.checkResults as any) ?? {};
+        return {
+          id: row.id,
+          name: results.name ?? results.check ?? 'Unnamed check',
+          category: results.category ?? null,
+          room: results.room ?? null,
+          complianceLevel: row.complianceLevel ?? null,
+          description: results.description ?? null,
+          recommendation: results.recommendation ?? ((row.recommendations as any[])?.[0] ?? null),
+          status: results.status ?? 'not_checked',
+          createdAt: row.createdAt,
+        };
+      });
+    }),
+
+  // ── Add a check ───────────────────────────────────────
+  addCheck: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      name: z.string(),
+      category: z.string(),
+      room: z.string().optional(),
+      complianceLevel: z.string().optional(),
+      description: z.string().optional(),
+      recommendation: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const checkData = {
+        name: input.name,
+        category: input.category,
+        room: input.room ?? null,
+        description: input.description ?? null,
+        recommendation: input.recommendation ?? null,
+        status: 'not_checked',
+      };
+
+      const [result] = await ctx.db.insert(universalDesignChecks).values({
+        projectId: input.projectId,
+        roomId: null,
+        checkResults: checkData,
+        complianceLevel: input.complianceLevel ?? 'none',
+        recommendations: input.recommendation ? [input.recommendation] : [],
+      }).returning();
+      return {
+        id: result!.id,
+        name: checkData.name,
+        category: checkData.category,
+        room: checkData.room,
+        complianceLevel: result!.complianceLevel,
+        description: checkData.description,
+        recommendation: checkData.recommendation,
+        status: checkData.status,
+        createdAt: result!.createdAt,
+      };
+    }),
+
+  // ── Update check status ───────────────────────────────
+  updateCheckStatus: protectedProcedure
+    .input(z.object({
+      id: z.string(),
+      status: z.enum(['compliant', 'partial', 'non_compliant', 'not_checked']),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const check = await ctx.db.query.universalDesignChecks.findFirst({
+        where: eq(universalDesignChecks.id, input.id),
+        with: { project: true },
+      });
+      if (!check) throw new Error('Check not found');
+      if ((check.project as any).userId !== ctx.userId) throw new Error('Access denied');
+
+      const existingResults = (check.checkResults as any) ?? {};
+      existingResults.status = input.status;
+
+      const [updated] = await ctx.db.update(universalDesignChecks).set({
+        checkResults: existingResults,
+        complianceLevel: input.status === 'compliant' ? 'full' : input.status === 'partial' ? 'partial' : input.status === 'non_compliant' ? 'non_compliant' : 'none',
+      }).where(eq(universalDesignChecks.id, input.id)).returning();
+      return { id: updated!.id, status: input.status };
+    }),
+
+  // ── Delete check (frontend version) ───────────────────
+  deleteCheck: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const check = await ctx.db.query.universalDesignChecks.findFirst({
+        where: eq(universalDesignChecks.id, input.id),
+        with: { project: true },
+      });
+      if (!check) throw new Error('Check not found');
+      if ((check.project as any).userId !== ctx.userId) throw new Error('Access denied');
+      await ctx.db.delete(universalDesignChecks).where(eq(universalDesignChecks.id, input.id));
+      return { success: true };
+    }),
+
+  // ── Run audit (generate default checks) ───────────────
+  runAudit: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const defaultChecks = [
+        { name: 'Doorway Width', category: 'Mobility', description: 'All doorways min 815mm (32") clear width', recommendation: 'Widen doorways to at least 815mm' },
+        { name: 'Wheelchair Turning Radius', category: 'Mobility', description: 'Min 1524mm (60") turning space in key rooms', recommendation: 'Ensure 1524mm clear turning space' },
+        { name: 'Grab Bars', category: 'Bathroom', description: 'Grab bars at toilet and shower/tub', recommendation: 'Install ADA-compliant grab bars' },
+        { name: 'Lever Door Handles', category: 'General', description: 'Lever-style handles on all doors', recommendation: 'Replace knob handles with lever-style' },
+        { name: 'Step-Free Entry', category: 'Entry', description: 'At least one step-free entrance', recommendation: 'Provide zero-step entry or ramp' },
+        { name: 'Floor Transitions', category: 'Flooring', description: 'Max 6mm level change without ramp', recommendation: 'Smooth floor transitions between rooms' },
+        { name: 'Light Switch Height', category: 'Electrical', description: 'Switches at 1067mm (42") height', recommendation: 'Lower switches to 1067mm max height' },
+        { name: 'Outlet Height', category: 'Electrical', description: 'Outlets at min 380mm (15") from floor', recommendation: 'Raise outlets to at least 380mm' },
+        { name: 'Hallway Width', category: 'Mobility', description: 'Hallways min 915mm (36") wide', recommendation: 'Widen hallways to at least 915mm' },
+        { name: 'Non-Slip Flooring', category: 'Safety', description: 'Non-slip surfaces in wet areas', recommendation: 'Install non-slip flooring in bathrooms and kitchen' },
+      ];
+
+      const createdChecks = [];
+      for (const chk of defaultChecks) {
+        const [row] = await ctx.db.insert(universalDesignChecks).values({
+          projectId: input.projectId,
+          roomId: null,
+          checkResults: {
+            name: chk.name,
+            category: chk.category,
+            description: chk.description,
+            recommendation: chk.recommendation,
+            status: 'not_checked',
+          },
+          complianceLevel: 'none',
+          recommendations: [chk.recommendation],
+        }).returning();
+        createdChecks.push({
+          id: row!.id,
+          name: chk.name,
+          category: chk.category,
+          room: null,
+          complianceLevel: 'none',
+          description: chk.description,
+          recommendation: chk.recommendation,
+          status: 'not_checked',
+          createdAt: row!.createdAt,
+        });
+      }
+
+      return createdChecks;
+    }),
+
   // ── List checks ─────────────────────────────────────────
   list: protectedProcedure
     .input(z.object({

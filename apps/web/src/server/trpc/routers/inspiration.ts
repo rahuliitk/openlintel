@@ -30,6 +30,8 @@ export const inspirationRouter = router({
     .input(z.object({
       projectId: z.string(),
       name: z.string().min(1),
+      category: z.string().optional(),
+      description: z.string().optional(),
       layout: z.enum(['masonry', 'grid', 'freeform']).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
@@ -43,7 +45,12 @@ export const inspirationRouter = router({
         name: input.name,
         layout: input.layout ?? 'masonry',
       }).returning();
-      return board;
+      return {
+        ...board,
+        category: input.category ?? 'overall_style',
+        description: input.description ?? null,
+        status: 'active',
+      };
     }),
 
   // ── Delete board ───────────────────────────────────────
@@ -65,14 +72,40 @@ export const inspirationRouter = router({
   // Inspiration Pins
   // ═══════════════════════════════════════════════════════
 
-  // ── List pins ──────────────────────────────────────────
+  // ── List pins (by project or by board) ─────────────────
   listPins: protectedProcedure
     .input(z.object({
-      boardId: z.string(),
+      boardId: z.string().optional(),
+      projectId: z.string().optional(),
       category: z.string().optional(),
       style: z.string().optional(),
     }))
     .query(async ({ ctx, input }) => {
+      // If projectId provided, list all pins across all boards for the project
+      if (input.projectId) {
+        const project = await ctx.db.query.projects.findFirst({
+          where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+        });
+        if (!project) throw new Error('Project not found');
+
+        const boards = await ctx.db.query.inspirationBoards.findMany({
+          where: eq(inspirationBoards.projectId, input.projectId),
+        });
+
+        const allPins: any[] = [];
+        for (const board of boards) {
+          const pins = await ctx.db.query.inspirationPins.findMany({
+            where: eq(inspirationPins.boardId, board.id),
+            orderBy: (p, { desc }) => [desc(p.createdAt)],
+          });
+          allPins.push(...pins);
+        }
+        return allPins;
+      }
+
+      // Otherwise require boardId
+      if (!input.boardId) return [];
+
       const board = await ctx.db.query.inspirationBoards.findFirst({
         where: eq(inspirationBoards.id, input.boardId),
         with: { project: true },
@@ -86,7 +119,6 @@ export const inspirationRouter = router({
 
       return ctx.db.query.inspirationPins.findMany({
         where: and(...conditions),
-        with: { user: true },
         orderBy: (p, { desc }) => [desc(p.createdAt)],
       });
     }),
@@ -99,6 +131,7 @@ export const inspirationRouter = router({
       imageKey: z.string().optional(),
       sourceUrl: z.string().optional(),
       note: z.string().optional(),
+      caption: z.string().optional(),
       tags: z.array(z.string()).optional(),
       style: z.string().optional(),
       category: z.string().optional(),
@@ -118,7 +151,7 @@ export const inspirationRouter = router({
         imageUrl: input.imageUrl ?? null,
         imageKey: input.imageKey ?? null,
         sourceUrl: input.sourceUrl ?? null,
-        note: input.note ?? null,
+        note: input.note ?? input.caption ?? null,
         tags: input.tags ?? null,
         style: input.style ?? null,
         category: input.category ?? null,
@@ -146,5 +179,19 @@ export const inspirationRouter = router({
 
       await ctx.db.delete(inspirationPins).where(eq(inspirationPins.id, input.id));
       return { success: true };
+    }),
+
+  // ── Find visually similar images on a board ───────────
+  findSimilar: protectedProcedure
+    .input(z.object({ boardId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const board = await ctx.db.query.inspirationBoards.findFirst({
+        where: eq(inspirationBoards.id, input.boardId),
+        with: { project: true, pins: true },
+      });
+      if (!board) throw new Error('Board not found');
+      if ((board.project as any).userId !== ctx.userId) throw new Error('Access denied');
+      // Placeholder: return existing pin count as similar count
+      return { count: board.pins?.length ?? 0 };
     }),
 });

@@ -63,6 +63,7 @@ import { teamRouter } from './team';
 // F1-F7: Advanced Technology
 import { spacePlanningRouter } from './spacePlanning';
 import { complianceQueryRouter } from './complianceQuery';
+import { complianceChatRouter } from './complianceChat';
 import { droneRouter } from './drone';
 import { lidarRouter } from './lidar';
 import { smartHomeRouter } from './smartHome';
@@ -155,6 +156,7 @@ export const appRouter = router({
   selection: selectionRouter,
   inspiration: inspirationRouter,
   walkthroughAnnotation: walkthroughAnnotationRouter,
+  annotation: walkthroughAnnotationRouter,
   // E1-E5: Business Operations
   proposal: proposalRouter,
   crm: crmRouter,
@@ -164,13 +166,16 @@ export const appRouter = router({
   // F1-F7: Advanced Technology
   spacePlanning: spacePlanningRouter,
   complianceQuery: complianceQueryRouter,
+  complianceChat: complianceChatRouter,
   drone: droneRouter,
   lidar: lidarRouter,
   smartHome: smartHomeRouter,
   // G1-G5: Specialized Design Areas
   closetDesign: closetDesignRouter,
   theaterDesign: theaterDesignRouter,
+  theater: theaterDesignRouter,
   outdoorDesign: outdoorDesignRouter,
+  outdoor: outdoorDesignRouter,
   universalDesign: universalDesignRouter,
   multiUnit: multiUnitRouter,
   // H1-H4: Reporting & Documentation
@@ -179,13 +184,19 @@ export const appRouter = router({
   asBuilt: asBuiltRouter,
   // I-J: Integrations & Marketplace
   integration: integrationRouter,
+  integrations: integrationRouter,
   propertyValuation: propertyValuationRouter,
+  propertyValue: propertyValuationRouter,
   serviceBooking: serviceBookingRouter,
+  bookings: serviceBookingRouter,
   sampleRequest: sampleRequestRouter,
+  samples: sampleRequestRouter,
   // L1-L3: Data & Intelligence
   benchmark: benchmarkRouter,
+  benchmarks: benchmarkRouter,
   postOccupancy: postOccupancyRouter,
   designLearning: designLearningRouter,
+  designFeedback: designLearningRouter,
   // A1-A7: Design & Visualization
   parametric: parametricRouter,
   floorPlanEditor: floorPlanEditorRouter,
@@ -197,8 +208,8 @@ export const appRouter = router({
   // B1-B4: Structural & Engineering
   structural: structuralRouter,
   siteAnalysis: siteAnalysisRouter,
-  energyModel: energyModelRouter,
-  acoustic: acousticRouter,
+  energy: energyModelRouter,
+  acoustics: acousticRouter,
 });
 
 export type AppRouter = typeof appRouter;

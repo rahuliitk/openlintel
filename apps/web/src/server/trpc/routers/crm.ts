@@ -9,15 +9,22 @@ export const crmRouter = router({
 
   listLeads: protectedProcedure
     .input(z.object({
+      projectId: z.string().optional(),
       status: z.string().optional(),
     }).optional())
     .query(async ({ ctx, input }) => {
       const conditions = [eq(leads.userId, ctx.userId)];
       if (input?.status) conditions.push(eq(leads.status, input.status));
-      return ctx.db.query.leads.findMany({
+      if (input?.projectId) conditions.push(eq(leads.projectId, input.projectId));
+      const rows = await ctx.db.query.leads.findMany({
         where: and(...conditions),
         orderBy: (l, { desc }) => [desc(l.updatedAt)],
       });
+      return rows.map((lead) => ({
+        ...lead,
+        stage: lead.status,
+        company: null,
+      }));
     }),
 
   getLeadById: protectedProcedure
@@ -36,6 +43,7 @@ export const crmRouter = router({
       name: z.string().min(1),
       email: z.string().email().optional(),
       phone: z.string().optional(),
+      company: z.string().optional(),
       source: z.string().optional(),
       estimatedValue: z.number().optional(),
       notes: z.string().optional(),
@@ -54,7 +62,7 @@ export const crmRouter = router({
         nextFollowUp: input.nextFollowUp ? new Date(input.nextFollowUp) : null,
         projectId: input.projectId ?? null,
       }).returning();
-      return lead;
+      return { ...lead, company: input.company ?? null };
     }),
 
   updateLead: protectedProcedure
@@ -81,6 +89,23 @@ export const crmRouter = router({
         updates.nextFollowUp = nextFollowUp ? new Date(nextFollowUp) : null;
       }
       const [updated] = await ctx.db.update(leads).set(updates).where(eq(leads.id, id)).returning();
+      return updated;
+    }),
+
+  updateLeadStage: protectedProcedure
+    .input(z.object({
+      id: z.string(),
+      stage: z.string().min(1),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const lead = await ctx.db.query.leads.findFirst({
+        where: and(eq(leads.id, input.id), eq(leads.userId, ctx.userId)),
+      });
+      if (!lead) throw new Error('Lead not found');
+      const [updated] = await ctx.db.update(leads).set({
+        status: input.stage,
+        updatedAt: new Date(),
+      }).where(eq(leads.id, input.id)).returning();
       return updated;
     }),
 

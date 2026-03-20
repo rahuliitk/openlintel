@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { router, protectedProcedure } from '../init';
 import {
-  teams, teamMembers, projectAssignments, projects, eq, and,
+  teams, teamMembers, projectAssignments, projects, users, eq, and,
 } from '@openlintel/db';
 
 export const teamRouter = router({
@@ -56,8 +56,40 @@ export const teamRouter = router({
   // ── Team Members ────────────────────────────────────────
 
   listMembers: protectedProcedure
-    .input(z.object({ teamId: z.string() }))
+    .input(z.object({ teamId: z.string().optional(), projectId: z.string().optional() }))
     .query(async ({ ctx, input }) => {
+      // If projectId provided, list members for the project's team (or project assignments)
+      if (input.projectId) {
+        const project = await ctx.db.query.projects.findFirst({
+          where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+        });
+        if (!project) throw new Error('Project not found');
+        const assignments = await ctx.db.query.projectAssignments.findMany({
+          where: eq(projectAssignments.projectId, input.projectId),
+          orderBy: (a, { desc }) => [desc(a.createdAt)],
+        });
+        // Enrich with user data for the frontend
+        const enriched = await Promise.all(
+          assignments.map(async (a) => {
+            const user = await ctx.db.query.users.findFirst({
+              where: eq(users.id, a.userId),
+            });
+            return {
+              ...a,
+              name: (user as any)?.name ?? 'Unknown',
+              email: (user as any)?.email ?? null,
+              phone: null,
+              office: null,
+              maxHoursPerWeek: 40,
+              currentHoursWeek: Math.round((a.allocationPercent ?? 100) * 40 / 100),
+              isAway: false,
+            };
+          }),
+        );
+        return enriched;
+      }
+      // Otherwise require teamId
+      if (!input.teamId) return [];
       const team = await ctx.db.query.teams.findFirst({
         where: and(eq(teams.id, input.teamId), eq(teams.userId, ctx.userId)),
       });
@@ -70,18 +102,49 @@ export const teamRouter = router({
 
   addMember: protectedProcedure
     .input(z.object({
-      teamId: z.string(),
-      userId: z.string(),
+      teamId: z.string().optional(),
+      projectId: z.string().optional(),
+      userId: z.string().optional(),
+      name: z.string().optional(),
+      email: z.string().optional(),
+      phone: z.string().optional(),
       role: z.string().min(1),
+      office: z.string().optional(),
+      maxHoursPerWeek: z.number().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
+      // If projectId provided, create a project assignment
+      if (input.projectId) {
+        const project = await ctx.db.query.projects.findFirst({
+          where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+        });
+        if (!project) throw new Error('Project not found');
+        const [assignment] = await ctx.db.insert(projectAssignments).values({
+          projectId: input.projectId,
+          userId: input.userId ?? ctx.userId,
+          role: input.role,
+          allocationPercent: input.maxHoursPerWeek ? Math.round((input.maxHoursPerWeek / 40) * 100) : 100,
+        }).returning();
+        return {
+          ...assignment,
+          name: input.name ?? '',
+          email: input.email ?? null,
+          phone: input.phone ?? null,
+          office: input.office ?? null,
+          maxHoursPerWeek: input.maxHoursPerWeek ?? 40,
+          currentHoursWeek: 0,
+          isAway: false,
+        };
+      }
+      // Otherwise require teamId
+      if (!input.teamId) throw new Error('Either teamId or projectId is required');
       const team = await ctx.db.query.teams.findFirst({
         where: and(eq(teams.id, input.teamId), eq(teams.userId, ctx.userId)),
       });
       if (!team) throw new Error('Team not found');
       const [member] = await ctx.db.insert(teamMembers).values({
         teamId: input.teamId,
-        userId: input.userId,
+        userId: input.userId ?? ctx.userId,
         role: input.role,
       }).returning();
       return member;

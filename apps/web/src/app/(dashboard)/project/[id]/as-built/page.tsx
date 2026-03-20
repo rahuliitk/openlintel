@@ -224,11 +224,11 @@ export default function AsBuiltPage({ params }: { params: Promise<{ id: string }
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="origVal">Original Value</Label>
-                    <Input id="origVal" placeholder="e.g. 12'-6\"" value={originalValue} onChange={(e) => setOriginalValue(e.target.value)} />
+                    <Input id="origVal" placeholder={"e.g. 12'-6\""} value={originalValue} onChange={(e) => setOriginalValue(e.target.value)} />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="abVal">As-Built Value</Label>
-                    <Input id="abVal" placeholder="e.g. 12'-2\"" value={asBuiltValue} onChange={(e) => setAsBuiltValue(e.target.value)} />
+                    <Input id="abVal" placeholder={"e.g. 12'-2\""} value={asBuiltValue} onChange={(e) => setAsBuiltValue(e.target.value)} />
                   </div>
                 </div>
                 <div className="space-y-2">

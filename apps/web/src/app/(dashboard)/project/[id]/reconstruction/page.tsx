@@ -69,7 +69,7 @@ export default function ReconstructionPage({ params }: { params: Promise<{ id: s
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   /* ── Queries ──────────────────────────────────────────────── */
-  const { data: project, isLoading: projectLoading } = trpc.project.getById.useQuery({ id: projectId });
+  const { data: project, isLoading: projectLoading } = trpc.project.byId.useQuery({ id: projectId });
 
   const rooms = (project as any)?.rooms ?? [];
 

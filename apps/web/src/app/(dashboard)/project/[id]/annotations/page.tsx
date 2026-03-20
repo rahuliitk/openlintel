@@ -105,7 +105,7 @@ export default function AnnotationsPage({ params }: { params: Promise<{ id: stri
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [annotationType, setAnnotationType] = useState('general');
+  const [annotationType, setAnnotationType] = useState<string>('general');
   const [elementType, setElementType] = useState('other');
   const [roomId, setRoomId] = useState('');
   const [comment, setComment] = useState('');

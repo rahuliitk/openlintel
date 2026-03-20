@@ -4,7 +4,7 @@ import { router, protectedProcedure } from '../init';
 
 export const roomRouter = router({
   // List rooms for a project (verifies ownership)
-  listByProject: protectedProcedure
+  list: protectedProcedure
     .input(z.object({ projectId: z.string() }))
     .query(async ({ ctx, input }) => {
       // Verify project ownership

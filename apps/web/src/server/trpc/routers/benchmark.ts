@@ -1,8 +1,37 @@
 import { z } from 'zod';
 import { router, protectedProcedure } from '../init';
 import {
-  marketBenchmarks, laborRates, eq, and,
+  marketBenchmarks, laborRates, lessonsLearned, projects, eq, and,
 } from '@openlintel/db';
+
+/** Simulate market rate lookup based on category and quality level */
+function generateMarketComparison(category: string, yourCost: number, qualityLevel?: string) {
+  // Baseline multipliers by quality level
+  const qualityMultiplier: Record<string, number> = {
+    budget: 0.7,
+    mid_range: 1.0,
+    upscale: 1.4,
+    luxury: 2.0,
+  };
+  const mult = qualityMultiplier[qualityLevel ?? 'mid_range'] ?? 1.0;
+
+  // Simulate a market median around the user cost with some variance
+  const variance = 0.15 + Math.random() * 0.2; // 15-35% variance
+  const marketMedian = Math.round(yourCost * (0.9 + Math.random() * 0.2) * mult * 100) / 100;
+  const marketLow = Math.round(marketMedian * (1 - variance) * 100) / 100;
+  const marketHigh = Math.round(marketMedian * (1 + variance) * 100) / 100;
+
+  // Calculate percentile (where the user's cost falls in the market range)
+  let percentile = 50;
+  if (marketHigh > marketLow) {
+    percentile = Math.round(((yourCost - marketLow) / (marketHigh - marketLow)) * 100);
+    percentile = Math.max(1, Math.min(99, percentile));
+  }
+
+  const yearOverYearPct = Math.round((Math.random() * 10 - 3) * 10) / 10; // -3% to +7%
+
+  return { marketLow, marketHigh, marketMedian, percentile, yearOverYearPct };
+}
 
 export const benchmarkRouter = router({
   // ── Get market benchmarks ───────────────────────────────
@@ -149,5 +178,127 @@ export const benchmarkRouter = router({
           isAboveBenchmark: difference > 0,
         },
       };
+    }),
+
+  // ══════════════════════════════════════════════════════════
+  // Project-scoped benchmarks (used by benchmarks page)
+  // Stored in lessonsLearned table with benchmark data in tags jsonb
+  // ══════════════════════════════════════════════════════════
+
+  // ── List project benchmarks ───────────────────────────────
+  list: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const items = await ctx.db.query.lessonsLearned.findMany({
+        where: and(
+          eq(lessonsLearned.projectId, input.projectId),
+          eq(lessonsLearned.userId, ctx.userId),
+          eq(lessonsLearned.category, '__benchmark__'),
+        ),
+        orderBy: (l, { desc }) => [desc(l.createdAt)],
+      });
+
+      return items.map((item) => {
+        const data = (item.tags as any) ?? {};
+        return {
+          id: item.id,
+          category: item.title,
+          yourCost: data.yourCost ?? 0,
+          qualityLevel: data.qualityLevel ?? null,
+          zipCode: data.zipCode ?? null,
+          percentile: data.percentile ?? 50,
+          marketLow: data.marketLow ?? 0,
+          marketHigh: data.marketHigh ?? 0,
+          marketMedian: data.marketMedian ?? 0,
+          yearOverYearPct: data.yearOverYearPct ?? 0,
+          createdAt: item.createdAt,
+        };
+      });
+    }),
+
+  // ── Add a project benchmark ───────────────────────────────
+  add: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      category: z.string().min(1),
+      yourCost: z.number().min(0),
+      qualityLevel: z.string().optional(),
+      zipCode: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      // Generate market comparison data
+      const market = generateMarketComparison(input.category, input.yourCost, input.qualityLevel);
+
+      const rows = await ctx.db.insert(lessonsLearned).values({
+        projectId: input.projectId,
+        userId: ctx.userId,
+        title: input.category,
+        description: `Benchmark: ${input.category} at $${input.yourCost}`,
+        category: '__benchmark__',
+        tags: {
+          yourCost: input.yourCost,
+          qualityLevel: input.qualityLevel ?? null,
+          zipCode: input.zipCode ?? null,
+          ...market,
+        },
+      }).returning();
+      const item = rows[0]!;
+
+      const data = (item.tags as any) ?? {};
+      return {
+        id: item.id,
+        category: item.title,
+        yourCost: data.yourCost ?? 0,
+        qualityLevel: data.qualityLevel ?? null,
+        zipCode: data.zipCode ?? null,
+        percentile: data.percentile ?? 50,
+        marketLow: data.marketLow ?? 0,
+        marketHigh: data.marketHigh ?? 0,
+        marketMedian: data.marketMedian ?? 0,
+        yearOverYearPct: data.yearOverYearPct ?? 0,
+        createdAt: item.createdAt,
+      };
+    }),
+
+  // ── Refresh all project benchmarks ────────────────────────
+  refreshAll: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const items = await ctx.db.query.lessonsLearned.findMany({
+        where: and(
+          eq(lessonsLearned.projectId, input.projectId),
+          eq(lessonsLearned.userId, ctx.userId),
+          eq(lessonsLearned.category, '__benchmark__'),
+        ),
+      });
+
+      // Refresh market data for each benchmark
+      for (const item of items) {
+        const data = (item.tags as any) ?? {};
+        const market = generateMarketComparison(item.title, data.yourCost ?? 0, data.qualityLevel);
+        await ctx.db.update(lessonsLearned).set({
+          tags: {
+            ...data,
+            ...market,
+          },
+        }).where(eq(lessonsLearned.id, item.id));
+      }
+
+      return { success: true, refreshed: items.length };
     }),
 });

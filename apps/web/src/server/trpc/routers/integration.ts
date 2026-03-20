@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { router, protectedProcedure } from '../init';
 import {
-  integrationConfigs, communicationPreferences, eq, and,
+  integrationConfigs, communicationPreferences, projects, eq, and,
 } from '@openlintel/db';
 
 export const integrationRouter = router({
@@ -31,17 +31,86 @@ export const integrationRouter = router({
     }),
 
   connect: protectedProcedure
-    .input(z.object({
-      provider: z.enum([
-        'quickbooks', 'xero', 'google_drive', 'dropbox', 'onedrive',
-        'slack', 'microsoft_teams', 'procore', 'buildertrend',
-      ]),
-      accessToken: z.string(),
-      refreshToken: z.string().optional(),
-      config: z.any().optional(),
-    }))
+    .input(z.union([
+      // Original shape: provider-based connection
+      z.object({
+        provider: z.enum([
+          'quickbooks', 'xero', 'google_drive', 'dropbox', 'onedrive',
+          'slack', 'microsoft_teams', 'procore', 'buildertrend',
+        ]),
+        accessToken: z.string(),
+        refreshToken: z.string().optional(),
+        config: z.any().optional(),
+      }),
+      // Project-scoped shape: used by integrations page
+      z.object({
+        projectId: z.string(),
+        integrationId: z.string().min(1),
+        apiKey: z.string().optional(),
+        webhookUrl: z.string().optional(),
+      }),
+    ]))
     .mutation(async ({ ctx, input }) => {
-      // Check if integration already exists for this provider
+      // Project-scoped connection (used by integrations page)
+      if ('projectId' in input) {
+        const project = await ctx.db.query.projects.findFirst({
+          where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+        });
+        if (!project) throw new Error('Project not found');
+
+        // Check if this integration is already connected for this project
+        const allConfigs = await ctx.db.query.integrationConfigs.findMany({
+          where: and(
+            eq(integrationConfigs.userId, ctx.userId),
+            eq(integrationConfigs.provider, input.integrationId),
+          ),
+        });
+        const existingProjectConn = allConfigs.find((c) => {
+          const cfg = (c.config as any) ?? {};
+          return cfg.projectId === input.projectId;
+        });
+
+        if (existingProjectConn) {
+          const updatedRows = await ctx.db.update(integrationConfigs).set({
+            accessToken: input.apiKey ?? null,
+            config: {
+              projectId: input.projectId,
+              integrationId: input.integrationId,
+              webhookUrl: input.webhookUrl ?? null,
+            },
+            syncStatus: 'connected',
+            updatedAt: new Date(),
+          }).where(eq(integrationConfigs.id, existingProjectConn.id)).returning();
+          const updated = updatedRows[0]!;
+          return {
+            id: updated.id,
+            integrationId: input.integrationId,
+            status: updated.syncStatus ?? 'connected',
+            lastSyncAt: updated.lastSyncAt,
+          };
+        }
+
+        const configRows = await ctx.db.insert(integrationConfigs).values({
+          userId: ctx.userId,
+          provider: input.integrationId,
+          accessToken: input.apiKey ?? null,
+          config: {
+            projectId: input.projectId,
+            integrationId: input.integrationId,
+            webhookUrl: input.webhookUrl ?? null,
+          },
+          syncStatus: 'connected',
+        }).returning();
+        const config = configRows[0]!;
+        return {
+          id: config.id,
+          integrationId: input.integrationId,
+          status: config.syncStatus ?? 'connected',
+          lastSyncAt: config.lastSyncAt,
+        };
+      }
+
+      // Original provider-based connection
       const existing = await ctx.db.query.integrationConfigs.findFirst({
         where: and(
           eq(integrationConfigs.userId, ctx.userId),
@@ -50,7 +119,6 @@ export const integrationRouter = router({
       });
 
       if (existing) {
-        // Update existing integration
         const [updated] = await ctx.db.update(integrationConfigs).set({
           accessToken: input.accessToken,
           refreshToken: input.refreshToken ?? null,
@@ -97,6 +165,68 @@ export const integrationRouter = router({
         updatedAt: new Date(),
       }).where(eq(integrationConfigs.id, input.id)).returning();
       return updated;
+    }),
+
+  // ══════════════════════════════════════════════════════════
+  // Project-scoped integration connections (used by integrations page)
+  // Stored in integrationConfigs with projectId in the config jsonb
+  // ══════════════════════════════════════════════════════════
+
+  // ── List project connections ──────────────────────────────
+  listConnections: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      // Fetch all user integrations and filter by projectId in config
+      const allConfigs = await ctx.db.query.integrationConfigs.findMany({
+        where: eq(integrationConfigs.userId, ctx.userId),
+        orderBy: (c, { desc }) => [desc(c.updatedAt)],
+      });
+
+      return allConfigs
+        .filter((c) => {
+          const cfg = (c.config as any) ?? {};
+          return cfg.projectId === input.projectId;
+        })
+        .map((c) => {
+          const cfg = (c.config as any) ?? {};
+          return {
+            id: c.id,
+            integrationId: cfg.integrationId ?? c.provider,
+            status: c.syncStatus ?? 'connected',
+            lastSyncAt: c.lastSyncAt,
+            createdAt: c.createdAt,
+          };
+        });
+    }),
+
+  // ── Sync now (project-scoped alias) ──────────────────────
+  syncNow: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const config = await ctx.db.query.integrationConfigs.findFirst({
+        where: and(eq(integrationConfigs.id, input.id), eq(integrationConfigs.userId, ctx.userId)),
+      });
+      if (!config) throw new Error('Integration not found');
+      const updatedRows = await ctx.db.update(integrationConfigs).set({
+        syncStatus: 'syncing',
+        lastSyncAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(integrationConfigs.id, input.id)).returning();
+      const updated = updatedRows[0]!;
+
+      // Return in the shape the frontend expects after sync completes
+      const cfg = (updated.config as any) ?? {};
+      return {
+        id: updated.id,
+        integrationId: cfg.integrationId ?? updated.provider,
+        status: 'connected' as const,
+        lastSyncAt: updated.lastSyncAt,
+      };
     }),
 
   // ── Communication Preferences ───────────────────────────

@@ -15,9 +15,27 @@ export const sampleRequestRouter = router({
       const conditions = [eq(sampleRequests.userId, ctx.userId)];
       if (input?.projectId) conditions.push(eq(sampleRequests.projectId, input.projectId));
       if (input?.status) conditions.push(eq(sampleRequests.status, input.status));
-      return ctx.db.query.sampleRequests.findMany({
+      const rows = await ctx.db.query.sampleRequests.findMany({
         where: and(...conditions),
         orderBy: (r, { desc }) => [desc(r.createdAt)],
+      });
+      return rows.map((row) => {
+        const meta = (row.products as any) ?? {};
+        // Support both old format (array of products) and new format (material metadata object)
+        if (Array.isArray(meta)) {
+          return row;
+        }
+        return {
+          ...row,
+          name: meta.name ?? 'Untitled Sample',
+          category: meta.category ?? null,
+          supplier: meta.supplier ?? null,
+          color: meta.color ?? null,
+          sku: meta.sku ?? null,
+          room: meta.room ?? null,
+          decision: meta.decision ?? null,
+          notes: meta.notes ?? null,
+        };
       });
     }),
 
@@ -36,12 +54,21 @@ export const sampleRequestRouter = router({
   request: protectedProcedure
     .input(z.object({
       projectId: z.string().optional(),
+      // Legacy fields
       products: z.array(z.object({
         productId: z.string(),
         productName: z.string(),
         quantity: z.number().default(1),
-      })),
-      shippingAddress: z.string().min(1),
+      })).optional(),
+      shippingAddress: z.string().optional(),
+      // Frontend material sample fields
+      name: z.string().optional(),
+      category: z.string().optional(),
+      supplier: z.string().optional(),
+      color: z.string().optional(),
+      sku: z.string().optional(),
+      room: z.string().optional(),
+      notes: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       // Verify project ownership if provided
@@ -52,13 +79,47 @@ export const sampleRequestRouter = router({
         if (!project) throw new Error('Project not found');
       }
 
+      // Determine if this is a material sample request (new frontend) or legacy product request
+      let productsData: any;
+      if (input.name) {
+        // New frontend format: store material metadata in products jsonb
+        productsData = {
+          name: input.name,
+          category: input.category ?? null,
+          supplier: input.supplier ?? null,
+          color: input.color ?? null,
+          sku: input.sku ?? null,
+          room: input.room ?? null,
+          notes: input.notes ?? null,
+          decision: null,
+        };
+      } else {
+        productsData = input.products ?? [];
+      }
+
       const [request] = await ctx.db.insert(sampleRequests).values({
         userId: ctx.userId,
         projectId: input.projectId ?? null,
-        products: input.products,
-        shippingAddress: input.shippingAddress,
+        products: productsData,
+        shippingAddress: input.shippingAddress ?? null,
         status: 'requested',
       }).returning();
+
+      // Return with unpacked metadata for new frontend format
+      const meta = (request.products as any) ?? {};
+      if (!Array.isArray(meta) && meta.name) {
+        return {
+          ...request,
+          name: meta.name,
+          category: meta.category,
+          supplier: meta.supplier,
+          color: meta.color,
+          sku: meta.sku,
+          room: meta.room,
+          decision: meta.decision,
+          notes: meta.notes,
+        };
+      }
       return request;
     }),
 
@@ -105,5 +166,44 @@ export const sampleRequestRouter = router({
       if (!request) throw new Error('Sample request not found');
       await ctx.db.delete(sampleRequests).where(eq(sampleRequests.id, input.id));
       return { success: true };
+    }),
+
+  // ── Update decision (frontend-facing) ─────────────────
+  updateDecision: protectedProcedure
+    .input(z.object({
+      id: z.string(),
+      decision: z.enum(['approved', 'rejected', 'pending']),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const request = await ctx.db.query.sampleRequests.findFirst({
+        where: and(eq(sampleRequests.id, input.id), eq(sampleRequests.userId, ctx.userId)),
+      });
+      if (!request) throw new Error('Sample request not found');
+
+      // Update decision in the products jsonb metadata
+      const meta = (request.products as any) ?? {};
+      if (!Array.isArray(meta)) {
+        meta.decision = input.decision;
+      }
+      const [updated] = await ctx.db.update(sampleRequests)
+        .set({ products: meta })
+        .where(eq(sampleRequests.id, input.id))
+        .returning();
+
+      const updatedMeta = (updated.products as any) ?? {};
+      if (!Array.isArray(updatedMeta) && updatedMeta.name) {
+        return {
+          ...updated,
+          name: updatedMeta.name,
+          category: updatedMeta.category,
+          supplier: updatedMeta.supplier,
+          color: updatedMeta.color,
+          sku: updatedMeta.sku,
+          room: updatedMeta.room,
+          decision: updatedMeta.decision,
+          notes: updatedMeta.notes,
+        };
+      }
+      return updated;
     }),
 });

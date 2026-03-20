@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useState } from 'react';
+import { use, useState, useEffect } from 'react';
 import { trpc } from '@/lib/trpc/client';
 import {
   Button,
@@ -42,6 +42,7 @@ import {
   RefreshCw,
   Image,
   Video,
+  X,
 } from 'lucide-react';
 
 /* ─── Constants ─────────────────────────────────────────────── */
@@ -83,15 +84,28 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
   const [dialogOpen, setDialogOpen] = useState(false);
   const [renderName, setRenderName] = useState('');
   const [renderType, setRenderType] = useState('still');
-  const [roomId, setRoomId] = useState('');
+  const [roomId, setRoomId] = useState('__all__');
   const [timeOfDay, setTimeOfDay] = useState('afternoon');
   const [quality, setQuality] = useState('standard');
   const [description, setDescription] = useState('');
   const [resolution, setResolution] = useState('1920x1080');
+  const [previewRender, setPreviewRender] = useState<any | null>(null);
+  const [previewFrame, setPreviewFrame] = useState(0);
+  const [beforeAfterMode, setBeforeAfterMode] = useState<'before' | 'after'>('after');
 
   /* ── Queries ──────────────────────────────────────────────── */
   const { data: renders = [], isLoading } = trpc.render.list.useQuery({ projectId });
   const { data: rooms = [] } = trpc.room.list.useQuery({ projectId });
+
+  /* ── Auto-refresh while renders are in progress ────────────── */
+  const hasActiveRenders = renders.some((r: any) => r.status === 'rendering' || r.status === 'queued');
+  useEffect(() => {
+    if (!hasActiveRenders) return;
+    const interval = setInterval(() => {
+      utils.render.list.invalidate();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [hasActiveRenders, utils.render.list]);
 
   /* ── Mutations ────────────────────────────────────────────── */
   const createRender = trpc.render.create.useMutation({
@@ -99,7 +113,7 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
       utils.render.list.invalidate();
       setDialogOpen(false);
       resetForm();
-      toast({ title: 'Render queued', description: 'Your render has been added to the queue.' });
+      toast({ title: 'Render started', description: 'AI is generating your photorealistic render.' });
     },
     onError: (err) => {
       toast({ title: 'Failed to create render', description: err.message, variant: 'destructive' });
@@ -109,7 +123,7 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
   const retryRender = trpc.render.retry.useMutation({
     onSuccess: () => {
       utils.render.list.invalidate();
-      toast({ title: 'Render requeued' });
+      toast({ title: 'Render restarted', description: 'Retrying image generation.' });
     },
     onError: (err) => {
       toast({ title: 'Retry failed', description: err.message, variant: 'destructive' });
@@ -127,7 +141,7 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
   function resetForm() {
     setRenderName('');
     setRenderType('still');
-    setRoomId('');
+    setRoomId('__all__');
     setTimeOfDay('afternoon');
     setQuality('standard');
     setDescription('');
@@ -140,7 +154,7 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
       projectId,
       name: renderName,
       renderType,
-      roomId: roomId || undefined,
+      roomId: roomId && roomId !== '__all__' ? roomId : undefined,
       timeOfDay,
       quality,
       resolution,
@@ -183,7 +197,7 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Photorealistic Renders</h1>
             <p className="text-sm text-muted-foreground">
-              Queue ray-traced renders, 360 panoramas, and video walkthroughs.
+              Generate AI-powered photorealistic renders of your design.
             </p>
           </div>
         </div>
@@ -196,9 +210,9 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
           </DialogTrigger>
           <DialogContent className="max-w-lg">
             <DialogHeader>
-              <DialogTitle>Queue New Render</DialogTitle>
+              <DialogTitle>Generate New Render</DialogTitle>
               <DialogDescription>
-                Configure render settings for photorealistic output.
+                Describe the scene and AI will generate a photorealistic render.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -234,7 +248,7 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
                       <SelectValue placeholder="Select room" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">Full house</SelectItem>
+                      <SelectItem value="__all__">Full house</SelectItem>
                       {rooms.map((room: any) => (
                         <SelectItem key={room.id} value={room.id}>
                           {room.name}
@@ -286,11 +300,11 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
                 </div>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="renderDesc">Description</Label>
+                <Label htmlFor="renderDesc">Scene Description</Label>
                 <Textarea
                   id="renderDesc"
-                  placeholder="Camera angle, special lighting, elements to highlight..."
-                  rows={2}
+                  placeholder="Describe the scene: camera angle, furniture style, special lighting, elements to highlight..."
+                  rows={3}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                 />
@@ -304,10 +318,10 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
                 {createRender.isPending ? (
                   <>
                     <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                    Queueing...
+                    Starting...
                   </>
                 ) : (
-                  'Queue Render'
+                  'Generate Render'
                 )}
               </Button>
             </DialogFooter>
@@ -346,7 +360,7 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
                 <p className="text-sm text-muted-foreground">Rendering</p>
                 <p className="text-2xl font-bold text-blue-600">{renderingCount}</p>
               </div>
-              <RefreshCw className="h-8 w-8 text-blue-400 animate-spin" />
+              <RefreshCw className={`h-8 w-8 text-blue-400 ${renderingCount > 0 ? 'animate-spin' : ''}`} />
             </div>
           </CardContent>
         </Card>
@@ -375,24 +389,43 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
                   {render.outputUrl ? (
                     <img src={render.outputUrl} alt={render.name} className="h-full w-full object-cover" />
                   ) : render.status === 'rendering' ? (
-                    <Loader2 className="h-12 w-12 animate-spin text-muted-foreground/30" />
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="h-10 w-10 animate-spin text-blue-400" />
+                      <span className="text-xs text-muted-foreground">
+                        {render.renderType === 'video_walkthrough'
+                          ? `Generating frames (${(render.cameraPosition as any)?.frames?.length ?? 0}/4)...`
+                          : render.renderType === 'before_after'
+                          ? 'Generating before & after...'
+                          : 'AI is generating...'}
+                      </span>
+                    </div>
                   ) : (
                     <Camera className="h-12 w-12 text-muted-foreground/30" />
                   )}
                   <Badge className={`absolute top-2 right-2 text-[10px] ${STATUS_COLORS[render.status] || ''}`}>
                     {render.status}
                   </Badge>
-                  {render.renderType === 'video_walkthrough' && (
-                    <div className="absolute top-2 left-2">
+                  <div className="absolute top-2 left-2 flex gap-1">
+                    {render.renderType === 'video_walkthrough' && (
                       <Badge className="text-[10px] bg-purple-100 text-purple-800">
                         <Video className="mr-1 h-2.5 w-2.5" />
-                        Video
+                        {(render.cameraPosition as any)?.frames?.length ?? 0} frames
                       </Badge>
-                    </div>
-                  )}
+                    )}
+                    {render.renderType === 'panorama_360' && (
+                      <Badge className="text-[10px] bg-indigo-100 text-indigo-800">
+                        360°
+                      </Badge>
+                    )}
+                    {render.renderType === 'before_after' && (
+                      <Badge className="text-[10px] bg-orange-100 text-orange-800">
+                        Before & After
+                      </Badge>
+                    )}
+                  </div>
                 </div>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base truncate">{render.name}</CardTitle>
+                  <CardTitle className="text-base truncate">{render.name || 'Untitled Render'}</CardTitle>
                   <CardDescription>
                     {render.renderType.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}
                     {' '}&middot; {render.resolution}
@@ -402,27 +435,47 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
                   <div className="flex flex-wrap gap-2">
                     <div className="flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs font-medium">
                       <TimeIcon className="h-3 w-3" />
-                      {render.timeOfDay}
+                      {render.timeOfDay || 'afternoon'}
                     </div>
                     <div className="flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs font-medium capitalize">
-                      {render.quality}
+                      {render.quality || 'standard'}
                     </div>
                   </div>
                   {render.description && (
                     <p className="text-sm text-muted-foreground line-clamp-2">{render.description}</p>
                   )}
                   <div className="flex items-center gap-2 pt-1">
-                    {render.status === 'completed' && (
+                    {render.status === 'completed' && render.outputUrl && (
                       <>
-                        <Button variant="outline" size="sm" className="flex-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => { setPreviewRender(render); setPreviewFrame(0); setBeforeAfterMode('after'); }}
+                        >
                           <Eye className="mr-1 h-3.5 w-3.5" />
                           View
                         </Button>
-                        <Button variant="outline" size="sm">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const a = document.createElement('a');
+                            a.href = render.outputUrl;
+                            a.target = '_blank';
+                            a.download = `${(render.name || 'render').replace(/[^a-zA-Z0-9]/g, '_')}.png`;
+                            a.click();
+                          }}
+                        >
                           <Download className="mr-1 h-3.5 w-3.5" />
-                          Download
                         </Button>
                       </>
+                    )}
+                    {render.status === 'rendering' && (
+                      <Button variant="outline" size="sm" className="flex-1" disabled>
+                        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        Generating...
+                      </Button>
                     )}
                     {render.status === 'failed' && (
                       <Button
@@ -456,13 +509,105 @@ export default function RendersPage({ params }: { params: Promise<{ id: string }
           <Camera className="mb-4 h-12 w-12 text-muted-foreground" />
           <h2 className="mb-2 text-lg font-semibold">No Renders</h2>
           <p className="text-sm text-muted-foreground mb-4">
-            Queue photorealistic renders with ray-tracing, 360 panoramas, and video walkthroughs.
+            Generate AI-powered photorealistic renders of your rooms and spaces.
           </p>
           <Button size="sm" onClick={() => setDialogOpen(true)}>
             <Plus className="mr-1 h-4 w-4" />
             New Render
           </Button>
         </Card>
+      )}
+
+      {/* ── Full-screen Preview Dialog ─────────────────────── */}
+      {previewRender && (
+        <Dialog open={!!previewRender} onOpenChange={() => setPreviewRender(null)}>
+          <DialogContent className="max-w-5xl p-0 overflow-hidden">
+            <div className="relative">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="absolute top-2 right-2 z-10 bg-black/50 text-white hover:bg-black/70"
+                onClick={() => setPreviewRender(null)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+
+              {/* ── Video Walkthrough: frame navigator ── */}
+              {previewRender.renderType === 'video_walkthrough' && (previewRender.cameraPosition as any)?.frames ? (() => {
+                const frames = (previewRender.cameraPosition as any).frames as string[];
+                const labels = ['Entry View', 'Center View', 'Far Corner', 'Detail Close-up'];
+                return (
+                  <div>
+                    <img src={frames[previewFrame] || previewRender.outputUrl} alt={`Frame ${previewFrame + 1}`} className="w-full h-auto" />
+                    <div className="flex items-center gap-2 p-4 bg-black/90">
+                      {frames.map((_: string, i: number) => (
+                        <Button
+                          key={i}
+                          variant={previewFrame === i ? 'default' : 'outline'}
+                          size="sm"
+                          className={previewFrame === i ? '' : 'text-white border-white/30 hover:bg-white/10'}
+                          onClick={() => setPreviewFrame(i)}
+                        >
+                          {labels[i] || `Frame ${i + 1}`}
+                        </Button>
+                      ))}
+                      <span className="ml-auto text-xs text-white/60">
+                        {previewFrame + 1} / {frames.length} frames
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()
+
+              /* ── Before & After: toggle ── */
+              : previewRender.renderType === 'before_after' && (previewRender.cameraPosition as any)?.beforeUrl ? (() => {
+                const { beforeUrl, afterUrl } = previewRender.cameraPosition as any;
+                return (
+                  <div>
+                    <img
+                      src={beforeAfterMode === 'before' ? beforeUrl : afterUrl}
+                      alt={beforeAfterMode === 'before' ? 'Before renovation' : 'After renovation'}
+                      className="w-full h-auto"
+                    />
+                    <div className="flex items-center gap-2 p-4 bg-black/90">
+                      <Button
+                        variant={beforeAfterMode === 'before' ? 'default' : 'outline'}
+                        size="sm"
+                        className={beforeAfterMode === 'before' ? 'bg-red-600 hover:bg-red-700' : 'text-white border-white/30 hover:bg-white/10'}
+                        onClick={() => setBeforeAfterMode('before')}
+                      >
+                        Before
+                      </Button>
+                      <Button
+                        variant={beforeAfterMode === 'after' ? 'default' : 'outline'}
+                        size="sm"
+                        className={beforeAfterMode === 'after' ? 'bg-green-600 hover:bg-green-700' : 'text-white border-white/30 hover:bg-white/10'}
+                        onClick={() => setBeforeAfterMode('after')}
+                      >
+                        After
+                      </Button>
+                      <span className="ml-auto text-xs text-white/60">
+                        {beforeAfterMode === 'before' ? 'Before Renovation' : 'After Renovation'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()
+
+              /* ── Still / Panorama: single image ── */
+              : (
+                <div>
+                  <img src={previewRender.outputUrl} alt="Render preview" className="w-full h-auto" />
+                  {previewRender.renderType === 'panorama_360' && (
+                    <div className="p-3 bg-black/90 text-center">
+                      <span className="text-xs text-white/60">360° Equirectangular Panorama — use with a panorama viewer for immersive experience</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

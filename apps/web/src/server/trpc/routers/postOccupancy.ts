@@ -14,10 +14,19 @@ export const postOccupancyRouter = router({
         where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
       });
       if (!project) throw new Error('Project not found');
-      return ctx.db.query.postOccupancySurveys.findMany({
+      const surveys = await ctx.db.query.postOccupancySurveys.findMany({
         where: eq(postOccupancySurveys.projectId, input.projectId),
         orderBy: (s, { desc }) => [desc(s.createdAt)],
       });
+      return surveys.map((s) => ({
+        ...s,
+        name: `${s.surveyType.replace(/_/g, ' ')} survey`,
+        period: s.surveyType,
+        responseCount: 0,
+        averageRating: 0,
+        categoryRatings: null,
+        status: s.completedAt ? 'completed' : s.sentAt ? 'sent' : 'draft',
+      }));
     }),
 
   getSurvey: protectedProcedure
@@ -35,7 +44,11 @@ export const postOccupancyRouter = router({
   createSurvey: protectedProcedure
     .input(z.object({
       projectId: z.string(),
-      surveyType: z.enum(['3_month', '6_month', '12_month', 'custom']),
+      name: z.string().optional(),
+      period: z.string().optional(),
+      surveyType: z.enum(['3_month', '6_month', '12_month', '24_month', 'custom']).optional(),
+      questions: z.array(z.string()).optional(),
+      recipientEmails: z.array(z.string()).optional(),
       responses: z.any().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
@@ -43,13 +56,22 @@ export const postOccupancyRouter = router({
         where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
       });
       if (!project) throw new Error('Project not found');
+      const surveyType = input.surveyType ?? (input.period as any) ?? '3_month';
       const [survey] = await ctx.db.insert(postOccupancySurveys).values({
         projectId: input.projectId,
-        surveyType: input.surveyType,
+        surveyType,
         responses: input.responses ?? null,
         sentAt: new Date(),
       }).returning();
-      return survey;
+      return {
+        ...survey,
+        name: input.name ?? `${surveyType.replace(/_/g, ' ')} survey`,
+        period: input.period ?? surveyType,
+        responseCount: 0,
+        averageRating: 0,
+        categoryRatings: null,
+        status: 'draft',
+      };
     }),
 
   submitSurvey: protectedProcedure
@@ -67,6 +89,21 @@ export const postOccupancyRouter = router({
       const [updated] = await ctx.db.update(postOccupancySurveys).set({
         responses: input.responses,
         completedAt: new Date(),
+      }).where(eq(postOccupancySurveys.id, input.id)).returning();
+      return updated;
+    }),
+
+  sendSurvey: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const survey = await ctx.db.query.postOccupancySurveys.findFirst({
+        where: eq(postOccupancySurveys.id, input.id),
+        with: { project: true },
+      });
+      if (!survey) throw new Error('Survey not found');
+      if ((survey.project as any).userId !== ctx.userId) throw new Error('Access denied');
+      const [updated] = await ctx.db.update(postOccupancySurveys).set({
+        sentAt: new Date(),
       }).where(eq(postOccupancySurveys.id, input.id)).returning();
       return updated;
     }),

@@ -15,10 +15,22 @@ export const serviceBookingRouter = router({
       const conditions = [eq(serviceBookings.clientUserId, ctx.userId)];
       if (input?.projectId) conditions.push(eq(serviceBookings.projectId, input.projectId));
       if (input?.status) conditions.push(eq(serviceBookings.status, input.status));
-      return ctx.db.query.serviceBookings.findMany({
+      const rows = await ctx.db.query.serviceBookings.findMany({
         where: and(...conditions),
         orderBy: (b, { desc }) => [desc(b.scheduledDate)],
         with: { professional: true },
+      });
+      return rows.map((row) => {
+        let meta: any = {};
+        try { meta = JSON.parse(row.notes ?? '{}'); } catch { /* plain text notes */ }
+        return {
+          ...row,
+          providerName: meta.providerName ?? (row as any).professional?.name ?? 'Unknown',
+          providerEmail: meta.providerEmail ?? (row as any).professional?.email ?? null,
+          durationMinutes: meta.durationMinutes ?? row.duration ?? 60,
+          estimatedCost: meta.estimatedCost ?? row.amount ?? null,
+          location: meta.location ?? null,
+        };
       });
     }),
 
@@ -131,5 +143,71 @@ export const serviceBookingRouter = router({
       if (!booking) throw new Error('Booking not found');
       await ctx.db.delete(serviceBookings).where(eq(serviceBookings.id, input.id));
       return { success: true };
+    }),
+
+  // ── Create booking (frontend-facing) ──────────────────
+  create: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      serviceType: z.string().min(1),
+      providerName: z.string().min(1),
+      providerEmail: z.string().optional(),
+      scheduledDate: z.string(),
+      durationMinutes: z.number().optional(),
+      estimatedCost: z.number().optional(),
+      location: z.string().optional(),
+      notes: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      // Verify project ownership
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      // Find or create a contractor record for the provider
+      let professional = await ctx.db.query.contractors.findFirst({
+        where: eq(contractors.name, input.providerName),
+      });
+      if (!professional) {
+        const [created] = await ctx.db.insert(contractors).values({
+          name: input.providerName,
+          email: input.providerEmail ?? null,
+        }).returning();
+        professional = created;
+      }
+
+      // Store extra frontend fields in notes as JSON
+      const metaNotes = JSON.stringify({
+        providerName: input.providerName,
+        providerEmail: input.providerEmail ?? null,
+        location: input.location ?? null,
+        durationMinutes: input.durationMinutes ?? 60,
+        estimatedCost: input.estimatedCost ?? null,
+        userNotes: input.notes ?? null,
+      });
+
+      const [booking] = await ctx.db.insert(serviceBookings).values({
+        professionalId: professional.id,
+        projectId: input.projectId,
+        clientUserId: ctx.userId,
+        serviceType: input.serviceType,
+        scheduledDate: new Date(input.scheduledDate),
+        duration: input.durationMinutes ?? 60,
+        amount: input.estimatedCost ?? null,
+        notes: metaNotes,
+        status: 'requested',
+      }).returning();
+
+      // Parse notes to return frontend-expected shape
+      const meta = JSON.parse(booking.notes ?? '{}');
+      return {
+        ...booking,
+        providerName: meta.providerName ?? input.providerName,
+        providerEmail: meta.providerEmail ?? null,
+        durationMinutes: meta.durationMinutes ?? booking.duration ?? 60,
+        estimatedCost: meta.estimatedCost ?? booking.amount ?? null,
+        location: meta.location ?? null,
+      };
     }),
 });

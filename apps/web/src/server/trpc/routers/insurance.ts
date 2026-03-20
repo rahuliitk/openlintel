@@ -121,4 +121,65 @@ export const insuranceRouter = router({
         isExpired: cert.endDate.getTime() < Date.now(),
       }));
     }),
+
+  // ── List certificates for a project (frontend-compatible) ──
+  listCertificates: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const certs = await ctx.db.query.insuranceCertificates.findMany({
+        where: eq(insuranceCertificates.entityId, input.projectId),
+        orderBy: (c, { desc }) => [desc(c.createdAt)],
+      });
+      return certs.map((cert) => ({
+        ...cert,
+        partyName: cert.entityType ?? 'Unknown',
+        partyRole: cert.entityType ?? null,
+        expirationDate: cert.endDate.toISOString(),
+      }));
+    }),
+
+  // ── Create certificate (frontend-compatible) ──────────
+  createCertificate: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      partyName: z.string().min(1),
+      partyRole: z.string().optional(),
+      insuranceType: z.string().min(1),
+      carrier: z.string().optional(),
+      policyNumber: z.string().optional(),
+      coverageAmount: z.number().optional(),
+      effectiveDate: z.string().optional(),
+      expirationDate: z.string().min(1),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const [cert] = await ctx.db.insert(insuranceCertificates).values({
+        entityType: 'project',
+        entityId: input.projectId,
+        insuranceType: input.insuranceType,
+        carrier: input.carrier ?? null,
+        policyNumber: input.policyNumber ?? null,
+        coverageAmount: input.coverageAmount ?? null,
+        startDate: input.effectiveDate ? new Date(input.effectiveDate) : new Date(),
+        endDate: new Date(input.expirationDate),
+        certificateKey: null,
+      }).returning();
+      return {
+        ...cert,
+        partyName: input.partyName,
+        partyRole: input.partyRole ?? null,
+        expirationDate: input.expirationDate,
+      };
+    }),
+
+  // ── Delete certificate (frontend-compatible alias) ─────
+  deleteCertificate: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const cert = await ctx.db.query.insuranceCertificates.findFirst({
+        where: eq(insuranceCertificates.id, input.id),
+      });
+      if (!cert) throw new Error('Insurance certificate not found');
+      await ctx.db.delete(insuranceCertificates).where(eq(insuranceCertificates.id, input.id));
+      return { success: true };
+    }),
 });

@@ -27,18 +27,18 @@ import {
   floorPlanCanvases, wallSegments, openings, staircases,
   exteriorDesigns, cabinetLayouts, bathroomLayouts, kitchenBathLayouts, lightingFixtures,
   lightingDesigns, materialBoards, renderJobs,
-  structuralAnalyses, siteAnalyses, energyModels, acousticAnalyses,
-  rfis, submittals, progressReports,
-  safetyChecklists, safetyIncidents, safetyTrainingRecords,
+  structuralElements, structuralAnalyses, siteAnalysisItems, siteAnalyses, energyModels, energyModelItems, acousticAssessments, acousticAnalyses,
+  rfis, submittals, submittalItems, progressReports,
+  safetyRecords, safetyChecklists, safetyIncidents, safetyTrainingRecords,
   permits, inspections, documentVersions,
   projectClients, selectionCategories, selections,
   inspirationBoards, inspirationPins, walkthroughAnnotations,
   contractTemplates, proposals, leads, leadActivities,
   timeEntries, insuranceCertificates,
   teams, teamMembers, projectAssignments,
-  spacePlans, complianceQueries, droneCaptures, lidarScans, smartHomePlans,
+  spacePlans, complianceQueries, complianceReports, complianceChatMessages, droneCaptures, lidarScans, smartHomePlans,
   closetLayouts, theaterDesigns, outdoorDesigns, universalDesignChecks, multiUnitPlans,
-  drawingSetConfigs, specifications, asBuiltMarkups,
+  drawingSetConfigs, specifications, specSections, asBuiltMarkups, asBuiltFieldMarkups,
   integrationConfigs, communicationPreferences, propertyValuations,
   serviceBookings, sampleRequests,
   marketBenchmarks, laborRates, postOccupancySurveys, lessonsLearned, designFeedback,
@@ -507,9 +507,15 @@ export const renderJobsRelations = relations(renderJobs, ({ one }) => ({
 }));
 
 // B. Structural & Engineering
+export const structuralElementsRelations = relations(structuralElements, ({ one }) => ({
+  project: one(projects, { fields: [structuralElements.projectId], references: [projects.id] }),
+}));
 export const structuralAnalysesRelations = relations(structuralAnalyses, ({ one }) => ({
   project: one(projects, { fields: [structuralAnalyses.projectId], references: [projects.id] }),
   job: one(jobs, { fields: [structuralAnalyses.jobId], references: [jobs.id] }),
+}));
+export const siteAnalysisItemsRelations = relations(siteAnalysisItems, ({ one }) => ({
+  project: one(projects, { fields: [siteAnalysisItems.projectId], references: [projects.id] }),
 }));
 export const siteAnalysesRelations = relations(siteAnalyses, ({ one }) => ({
   project: one(projects, { fields: [siteAnalyses.projectId], references: [projects.id] }),
@@ -517,6 +523,12 @@ export const siteAnalysesRelations = relations(siteAnalyses, ({ one }) => ({
 export const energyModelsRelations = relations(energyModels, ({ one }) => ({
   project: one(projects, { fields: [energyModels.projectId], references: [projects.id] }),
   job: one(jobs, { fields: [energyModels.jobId], references: [jobs.id] }),
+}));
+export const energyModelItemsRelations = relations(energyModelItems, ({ one }) => ({
+  project: one(projects, { fields: [energyModelItems.projectId], references: [projects.id] }),
+}));
+export const acousticAssessmentsRelations = relations(acousticAssessments, ({ one }) => ({
+  project: one(projects, { fields: [acousticAssessments.projectId], references: [projects.id] }),
 }));
 export const acousticAnalysesRelations = relations(acousticAnalyses, ({ one }) => ({
   project: one(projects, { fields: [acousticAnalyses.projectId], references: [projects.id] }),
@@ -532,8 +544,14 @@ export const submittalsRelations = relations(submittals, ({ one }) => ({
   project: one(projects, { fields: [submittals.projectId], references: [projects.id] }),
   submittedProduct: one(products, { fields: [submittals.submittedProductId], references: [products.id] }),
 }));
+export const submittalItemsRelations = relations(submittalItems, ({ one }) => ({
+  project: one(projects, { fields: [submittalItems.projectId], references: [projects.id] }),
+}));
 export const progressReportsRelations = relations(progressReports, ({ one }) => ({
   project: one(projects, { fields: [progressReports.projectId], references: [projects.id] }),
+}));
+export const safetyRecordsRelations = relations(safetyRecords, ({ one }) => ({
+  project: one(projects, { fields: [safetyRecords.projectId], references: [projects.id] }),
 }));
 export const safetyChecklistsRelations = relations(safetyChecklists, ({ one }) => ({
   project: one(projects, { fields: [safetyChecklists.projectId], references: [projects.id] }),
@@ -661,9 +679,16 @@ export const drawingSetConfigsRelations = relations(drawingSetConfigs, ({ one })
 export const specificationsRelations = relations(specifications, ({ one }) => ({
   project: one(projects, { fields: [specifications.projectId], references: [projects.id] }),
 }));
+export const specSectionsRelations = relations(specSections, ({ one }) => ({
+  project: one(projects, { fields: [specSections.projectId], references: [projects.id] }),
+}));
 export const asBuiltMarkupsRelations = relations(asBuiltMarkups, ({ one }) => ({
   drawingResult: one(drawingResults, { fields: [asBuiltMarkups.drawingResultId], references: [drawingResults.id] }),
   creator: one(users, { fields: [asBuiltMarkups.createdBy], references: [users.id] }),
+}));
+export const asBuiltFieldMarkupsRelations = relations(asBuiltFieldMarkups, ({ one }) => ({
+  project: one(projects, { fields: [asBuiltFieldMarkups.projectId], references: [projects.id] }),
+  user: one(users, { fields: [asBuiltFieldMarkups.userId], references: [users.id] }),
 }));
 
 // I. Integrations
@@ -695,6 +720,14 @@ export const postOccupancySurveysRelations = relations(postOccupancySurveys, ({ 
 export const lessonsLearnedRelations = relations(lessonsLearned, ({ one }) => ({
   project: one(projects, { fields: [lessonsLearned.projectId], references: [projects.id] }),
   user: one(users, { fields: [lessonsLearned.userId], references: [users.id] }),
+}));
+export const complianceReportsRelations = relations(complianceReports, ({ one }) => ({
+  project: one(projects, { fields: [complianceReports.projectId], references: [projects.id] }),
+  user: one(users, { fields: [complianceReports.userId], references: [users.id] }),
+}));
+export const complianceChatMessagesRelations = relations(complianceChatMessages, ({ one }) => ({
+  project: one(projects, { fields: [complianceChatMessages.projectId], references: [projects.id] }),
+  user: one(users, { fields: [complianceChatMessages.userId], references: [users.id] }),
 }));
 export const designFeedbackRelations = relations(designFeedback, ({ one }) => ({
   designVariant: one(designVariants, { fields: [designFeedback.designVariantId], references: [designVariants.id] }),

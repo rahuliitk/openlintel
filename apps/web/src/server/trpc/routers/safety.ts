@@ -1,16 +1,97 @@
 import { z } from 'zod';
 import { router, protectedProcedure } from '../init';
 import {
-  safetyChecklists, safetyIncidents, safetyTrainingRecords,
+  safetyRecords, safetyChecklists, safetyIncidents, safetyTrainingRecords,
   projects, eq, and,
 } from '@openlintel/db';
 
 export const safetyRouter = router({
   // ═══════════════════════════════════════════════════════
-  // Safety Checklists
+  // Unified Safety Records (used by the Safety page)
   // ═══════════════════════════════════════════════════════
 
-  // ── List checklists ────────────────────────────────────
+  // ── List all safety records ─────────────────────────────
+  list: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      return ctx.db.query.safetyRecords.findMany({
+        where: eq(safetyRecords.projectId, input.projectId),
+        orderBy: (r, { desc }) => [desc(r.createdAt)],
+      });
+    }),
+
+  // ── Create a safety record ──────────────────────────────
+  create: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      title: z.string().min(1),
+      recordType: z.string(),
+      severity: z.string().default('minor'),
+      phase: z.string().default('framing'),
+      description: z.string().optional(),
+      assignedTo: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      const [record] = await ctx.db.insert(safetyRecords).values({
+        projectId: input.projectId,
+        title: input.title,
+        recordType: input.recordType,
+        severity: input.severity,
+        phase: input.phase,
+        status: 'open',
+        description: input.description ?? null,
+        assignedTo: input.assignedTo ?? null,
+      }).returning();
+      return record;
+    }),
+
+  // ── Resolve a safety record ─────────────────────────────
+  resolve: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const record = await ctx.db.query.safetyRecords.findFirst({
+        where: eq(safetyRecords.id, input.id),
+        with: { project: true },
+      });
+      if (!record) throw new Error('Record not found');
+      if ((record.project as any).userId !== ctx.userId) throw new Error('Access denied');
+
+      const [updated] = await ctx.db.update(safetyRecords)
+        .set({ status: 'resolved' })
+        .where(eq(safetyRecords.id, input.id))
+        .returning();
+      return updated;
+    }),
+
+  // ── Delete a safety record ──────────────────────────────
+  delete: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const record = await ctx.db.query.safetyRecords.findFirst({
+        where: eq(safetyRecords.id, input.id),
+        with: { project: true },
+      });
+      if (!record) throw new Error('Record not found');
+      if ((record.project as any).userId !== ctx.userId) throw new Error('Access denied');
+
+      await ctx.db.delete(safetyRecords).where(eq(safetyRecords.id, input.id));
+      return { success: true };
+    }),
+
+  // ═══════════════════════════════════════════════════════
+  // Safety Checklists (legacy)
+  // ═══════════════════════════════════════════════════════
+
   listChecklists: protectedProcedure
     .input(z.object({
       projectId: z.string(),
@@ -31,7 +112,6 @@ export const safetyRouter = router({
       });
     }),
 
-  // ── Create checklist ───────────────────────────────────
   createChecklist: protectedProcedure
     .input(z.object({
       projectId: z.string(),
@@ -59,7 +139,6 @@ export const safetyRouter = router({
       return checklist;
     }),
 
-  // ── Complete checklist ─────────────────────────────────
   completeChecklist: protectedProcedure
     .input(z.object({
       id: z.string(),
@@ -89,10 +168,9 @@ export const safetyRouter = router({
     }),
 
   // ═══════════════════════════════════════════════════════
-  // Safety Incidents
+  // Safety Incidents (legacy)
   // ═══════════════════════════════════════════════════════
 
-  // ── List incidents ─────────────────────────────────────
   listIncidents: protectedProcedure
     .input(z.object({
       projectId: z.string(),
@@ -115,7 +193,6 @@ export const safetyRouter = router({
       });
     }),
 
-  // ── Report incident ────────────────────────────────────
   reportIncident: protectedProcedure
     .input(z.object({
       projectId: z.string(),
@@ -150,7 +227,6 @@ export const safetyRouter = router({
       return incident;
     }),
 
-  // ── Update incident ────────────────────────────────────
   updateIncident: protectedProcedure
     .input(z.object({
       id: z.string(),
@@ -173,10 +249,9 @@ export const safetyRouter = router({
     }),
 
   // ═══════════════════════════════════════════════════════
-  // Safety Training Records
+  // Safety Training Records (legacy)
   // ═══════════════════════════════════════════════════════
 
-  // ── List training records ──────────────────────────────
   listTrainingRecords: protectedProcedure
     .input(z.object({
       projectId: z.string(),
@@ -197,7 +272,6 @@ export const safetyRouter = router({
       });
     }),
 
-  // ── Add training record ────────────────────────────────
   addTrainingRecord: protectedProcedure
     .input(z.object({
       projectId: z.string(),

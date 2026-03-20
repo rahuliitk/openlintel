@@ -85,6 +85,124 @@ export const multiUnitRouter = router({
       return { success: true };
     }),
 
+  // ── List individual units (from jsonb) ─────────────────
+  listUnits: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+      const plan = await ctx.db.query.multiUnitPlans.findFirst({
+        where: eq(multiUnitPlans.projectId, input.projectId),
+        orderBy: (m, { desc }) => [desc(m.createdAt)],
+      });
+      if (!plan) return [];
+      const units = (plan.units as any[]) ?? [];
+      return units.map((u: any, idx: number) => ({
+        id: u.id ?? `${plan.id}-unit-${idx}`,
+        name: u.name ?? `Unit ${idx + 1}`,
+        unitType: u.unitType ?? null,
+        constructionType: u.constructionType ?? null,
+        sqft: u.sqft ?? null,
+        bedrooms: u.bedrooms ?? null,
+        bathrooms: u.bathrooms ?? null,
+        estimatedRent: u.estimatedRent ?? null,
+        estimatedCost: u.estimatedCost ?? null,
+        notes: u.notes ?? null,
+        createdAt: u.createdAt ?? plan.createdAt,
+      }));
+    }),
+
+  // ── Create a unit (append to jsonb array) ─────────────
+  createUnit: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      name: z.string(),
+      unitType: z.string(),
+      constructionType: z.string().optional(),
+      sqft: z.number().optional(),
+      bedrooms: z.number(),
+      bathrooms: z.number(),
+      estimatedRent: z.number().optional(),
+      estimatedCost: z.number().optional(),
+      notes: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+
+      let plan = await ctx.db.query.multiUnitPlans.findFirst({
+        where: eq(multiUnitPlans.projectId, input.projectId),
+        orderBy: (m, { desc }) => [desc(m.createdAt)],
+      });
+
+      const newUnit = {
+        id: crypto.randomUUID(),
+        name: input.name,
+        unitType: input.unitType,
+        constructionType: input.constructionType ?? null,
+        sqft: input.sqft ?? null,
+        bedrooms: input.bedrooms,
+        bathrooms: input.bathrooms,
+        estimatedRent: input.estimatedRent ?? null,
+        estimatedCost: input.estimatedCost ?? null,
+        notes: input.notes ?? null,
+        createdAt: new Date().toISOString(),
+      };
+
+      if (plan) {
+        const existingUnits = (plan.units as any[]) ?? [];
+        existingUnits.push(newUnit);
+        const [updated] = await ctx.db.update(multiUnitPlans).set({
+          units: existingUnits,
+          unitCount: existingUnits.length,
+        }).where(eq(multiUnitPlans.id, plan.id)).returning();
+        return newUnit;
+      }
+
+      const [created] = await ctx.db.insert(multiUnitPlans).values({
+        projectId: input.projectId,
+        unitCount: 1,
+        units: [newUnit],
+        sharedSpaces: null,
+        parkingSpaces: null,
+        zoningCompliance: null,
+      }).returning();
+      return newUnit;
+    }),
+
+  // ── Delete a unit (remove from jsonb array) ───────────
+  deleteUnit: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      // We need to find which plan contains this unit
+      // Get all plans for projects owned by this user
+      const userProjects = await ctx.db.query.projects.findMany({
+        where: eq(projects.userId, ctx.userId),
+      });
+      const projectIds = userProjects.map((p) => p.id);
+      if (projectIds.length === 0) throw new Error('Unit not found');
+
+      const plans = await ctx.db.query.multiUnitPlans.findMany();
+      for (const plan of plans) {
+        if (!projectIds.includes(plan.projectId)) continue;
+        const units = (plan.units as any[]) ?? [];
+        const idx = units.findIndex((u: any) => u.id === input.id);
+        if (idx !== -1) {
+          units.splice(idx, 1);
+          await ctx.db.update(multiUnitPlans).set({
+            units: units,
+            unitCount: Math.max(units.length, 1),
+          }).where(eq(multiUnitPlans.id, plan.id));
+          return { success: true };
+        }
+      }
+      throw new Error('Unit not found');
+    }),
+
   // ── Check zoning compliance ─────────────────────────────
   checkZoning: protectedProcedure
     .input(z.object({
