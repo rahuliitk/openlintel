@@ -1,11 +1,9 @@
 import { z } from 'zod';
 import {
-  schedules, milestones, siteLogs, changeOrders, projects, jobs,
+  schedules, milestones, siteLogs, changeOrders, projects, rooms, jobs,
   eq, and,
 } from '@openlintel/db';
 import { router, protectedProcedure } from '../init';
-
-const PROJECT_SERVICE_URL = process.env.PROJECT_SERVICE_URL || 'http://localhost:8007';
 
 export const scheduleRouter = router({
   // ── Schedules ──────────────────────────────────────────────
@@ -32,6 +30,13 @@ export const scheduleRouter = router({
       });
       if (!project) throw new Error('Project not found');
 
+      // Count rooms in the project
+      const projectRooms = await ctx.db.query.rooms.findMany({
+        where: eq(rooms.projectId, input.projectId),
+      });
+      const roomCount = projectRooms.length || 1;
+
+      // Create a job for tracking
       const [job] = await ctx.db
         .insert(jobs)
         .values({
@@ -43,17 +48,114 @@ export const scheduleRouter = router({
         })
         .returning();
 
-      fetch(`${PROJECT_SERVICE_URL}/api/v1/schedules/job`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          job_id: job.id,
-          project_id: input.projectId,
-          user_id: ctx.userId,
-        }),
-      }).catch(() => {});
+      if (!job) throw new Error('Failed to create job');
 
-      return job;
+      // Generate construction schedule phases with task IDs for dependencies
+      const phases = [
+        { id: 'task-1', name: 'Site Preparation', duration: 3, depIds: [] as string[], trade: 'general', isCritical: true },
+        { id: 'task-2', name: 'Demolition', duration: 2 + roomCount, depIds: ['task-1'], trade: 'demolition', isCritical: true },
+        { id: 'task-3', name: 'Civil & Structural', duration: 5 + roomCount * 2, depIds: ['task-2'], trade: 'civil', isCritical: true },
+        { id: 'task-4', name: 'Plumbing Rough-in', duration: 3 + roomCount, depIds: ['task-3'], trade: 'plumbing', isCritical: false },
+        { id: 'task-5', name: 'Electrical Rough-in', duration: 3 + roomCount, depIds: ['task-3'], trade: 'electrical', isCritical: false },
+        { id: 'task-6', name: 'HVAC Installation', duration: 4 + roomCount, depIds: ['task-4', 'task-5'], trade: 'hvac', isCritical: false },
+        { id: 'task-7', name: 'Carpentry & Woodwork', duration: 5 + roomCount * 3, depIds: ['task-6'], trade: 'carpentry', isCritical: true },
+        { id: 'task-8', name: 'Flooring', duration: 3 + roomCount, depIds: ['task-7'], trade: 'flooring', isCritical: true },
+        { id: 'task-9', name: 'Painting & Finishes', duration: 3 + roomCount, depIds: ['task-8'], trade: 'painting', isCritical: false },
+        { id: 'task-10', name: 'Fixture Installation', duration: 2 + roomCount, depIds: ['task-9'], trade: 'fixtures', isCritical: false },
+        { id: 'task-11', name: 'Final Cleanup & Inspection', duration: 2, depIds: ['task-10'], trade: 'cleanup', isCritical: true },
+      ];
+
+      // Calculate start/end dates using dependency resolution
+      const today = new Date();
+      const taskEndDays: Record<string, number> = {};
+      const tasks = phases.map((phase) => {
+        let startDay = 0;
+        for (const depId of phase.depIds) {
+          if (taskEndDays[depId] !== undefined && taskEndDays[depId]! > startDay) {
+            startDay = taskEndDays[depId]!;
+          }
+        }
+        const endDay = startDay + phase.duration;
+        taskEndDays[phase.id] = endDay;
+
+        const startDate = new Date(today);
+        startDate.setDate(startDate.getDate() + startDay);
+        const endDate = new Date(today);
+        endDate.setDate(endDate.getDate() + endDay);
+
+        return {
+          id: phase.id,
+          name: phase.name,
+          duration: phase.duration,
+          startDay,
+          endDay,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
+          dependencies: phase.depIds,
+          trade: phase.trade,
+          isCritical: phase.isCritical,
+          progress: 0,
+          status: 'pending',
+        };
+      });
+
+      // Total project duration
+      const totalDays = Math.max(...Object.values(taskEndDays));
+      const projectEndDate = new Date(today);
+      projectEndDate.setDate(projectEndDate.getDate() + totalDays);
+
+      // Critical path: only tasks marked as critical
+      const criticalTaskIds = tasks.filter((t) => t.isCritical).map((t) => t.id);
+
+      // Create schedule record
+      const [schedule] = await ctx.db
+        .insert(schedules)
+        .values({
+          projectId: input.projectId,
+          jobId: job.id,
+          tasks,
+          criticalPath: criticalTaskIds,
+          startDate: today,
+          endDate: projectEndDate,
+          metadata: { roomCount, totalDays },
+        })
+        .returning();
+
+      if (!schedule) throw new Error('Failed to create schedule');
+
+      // Create milestone records for key phase completions
+      for (const task of tasks) {
+        await ctx.db.insert(milestones).values({
+          scheduleId: schedule.id,
+          name: `${task.name} Complete`,
+          description: `Completion of ${task.name} phase (${task.duration} days, ${task.trade})`,
+          dueDate: new Date(task.endDate),
+          status: 'pending',
+          paymentLinked: task.name === 'Flooring' || task.name === 'Final Cleanup & Inspection',
+        });
+      }
+
+      // Update job as completed
+      const outputJson = {
+        scheduleId: schedule.id,
+        tasks,
+        totalDays,
+        roomCount,
+        startDate: today.toISOString(),
+        endDate: projectEndDate.toISOString(),
+      };
+
+      await ctx.db
+        .update(jobs)
+        .set({
+          status: 'completed',
+          outputJson,
+          progress: 100,
+          completedAt: new Date(),
+        })
+        .where(eq(jobs.id, job.id));
+
+      return { ...job, status: 'completed', outputJson };
     }),
 
   // ── Milestones ─────────────────────────────────────────────
@@ -194,30 +296,10 @@ export const scheduleRouter = router({
       if (!order) throw new Error('Change order not found');
       if ((order as any).project.userId !== ctx.userId) throw new Error('Access denied');
 
-      try {
-        const res = await fetch(
-          `${PROJECT_SERVICE_URL}/api/v1/change-orders/${input.id}/analyze`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              change_order_id: input.id,
-              project_id: (order as any).projectId,
-              title: order.title,
-              description: order.description,
-              cost_impact: order.costImpact,
-              time_impact_days: order.timeImpactDays,
-            }),
-          },
-        );
-        if (!res.ok) throw new Error(`Analysis service returned ${res.status}`);
-        return await res.json() as { summary: string; risks: string[]; recommendations: string[] };
-      } catch {
-        return {
-          summary: `Change order "${order.title}" has a cost impact of $${order.costImpact ?? 0} and time impact of ${order.timeImpactDays ?? 0} days.`,
-          risks: [],
-          recommendations: [],
-        };
-      }
+      return {
+        summary: `Change order "${order.title}" has a cost impact of $${order.costImpact ?? 0} and time impact of ${order.timeImpactDays ?? 0} days.`,
+        risks: [],
+        recommendations: [],
+      };
     }),
 });

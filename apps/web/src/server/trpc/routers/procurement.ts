@@ -5,7 +5,19 @@ import {
 } from '@openlintel/db';
 import { router, protectedProcedure } from '../init';
 
-const PROCUREMENT_SERVICE_URL = process.env.PROCUREMENT_SERVICE_URL || 'http://localhost:8008';
+// Delivery lead days by category
+const CATEGORY_LEAD_DAYS: Record<string, number> = {
+  Furniture: 14,
+  Flooring: 10,
+  Paint: 7,
+  Fixtures: 12,
+  Hardware: 7,
+  Lighting: 10,
+  Plumbing: 10,
+  Electrical: 8,
+  HVAC: 14,
+  Appliances: 14,
+};
 
 export const procurementRouter = router({
   generateOrders: protectedProcedure
@@ -40,38 +52,8 @@ export const procurementRouter = router({
         specification: item.specification || '',
         quantity: item.quantity,
         unit: item.unit,
-        unit_price: item.unitPrice,
+        unitPrice: item.unitPrice,
       }));
-
-      // Load vendors from DB for the service
-      const vendorList = await ctx.db.query.vendors.findMany({
-        where: eq(vendors.isActive, true),
-      });
-      const vendorPayload = vendorList.map((v) => ({
-        id: v.id,
-        name: v.name,
-        categories: v.metadata && typeof v.metadata === 'object'
-          ? ((v.metadata as any).categories || [])
-          : [],
-        lead_time_days: v.metadata && typeof v.metadata === 'object'
-          ? ((v.metadata as any).lead_time_days || 7)
-          : 7,
-        min_order_qty: 1,
-        min_order_value: 0,
-        shipping_cost: 0,
-        rating: v.rating || 3.0,
-        city: v.city || '',
-      }));
-
-      // Load schedule milestones if available
-      const schedule = await ctx.db.query.schedules.findFirst({
-        where: eq(schedules.projectId, input.projectId),
-        with: { milestones: true },
-      });
-      const scheduleMilestones = schedule?.milestones?.map((m) => ({
-        name: m.name,
-        date: m.dueDate?.toISOString().split('T')[0],
-      })) || [];
 
       // Create job
       const [job] = await ctx.db
@@ -84,24 +66,100 @@ export const procurementRouter = router({
           projectId: input.projectId,
         })
         .returning();
+      if (!job) throw new Error('Failed to create job');
 
-      // Fire-and-forget to procurement service with full payload
-      fetch(`${PROCUREMENT_SERVICE_URL}/api/v1/orders/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          job_id: job.id,
-          project_id: input.projectId,
-          user_id: ctx.userId,
-          bom_items: bomItems,
-          vendors: vendorPayload.length > 0 ? vendorPayload : undefined,
-          schedule_milestones: scheduleMilestones.length > 0 ? scheduleMilestones : undefined,
-          target_budget: input.targetBudget,
-          currency: input.currency,
-        }),
-      }).catch(() => {});
+      // Group items by category
+      const categoryGroups: Record<string, typeof bomItems> = {};
+      for (const item of bomItems) {
+        const cat = item.category || 'General';
+        if (!categoryGroups[cat]) categoryGroups[cat] = [];
+        categoryGroups[cat].push(item);
+      }
 
-      return job;
+      // Load active vendors for potential matching
+      const vendorList = await ctx.db.query.vendors.findMany({
+        where: eq(vendors.isActive, true),
+      });
+
+      const now = new Date();
+      const createdOrders: any[] = [];
+
+      // For each category group, create a purchase order
+      for (const [category, items] of Object.entries(categoryGroups)) {
+        const totalAmount = items.reduce(
+          (sum, item) => sum + (item.quantity || 1) * (item.unitPrice || 0),
+          0,
+        );
+
+        const leadDays = CATEGORY_LEAD_DAYS[category] || 10;
+        const expectedDelivery = new Date(now);
+        expectedDelivery.setDate(expectedDelivery.getDate() + leadDays);
+
+        // Try to match a vendor by category metadata
+        const matchedVendor = vendorList.find((v) => {
+          const meta = v.metadata as any;
+          if (meta?.categories && Array.isArray(meta.categories)) {
+            return meta.categories.some(
+              (c: string) => c.toLowerCase() === category.toLowerCase(),
+            );
+          }
+          return false;
+        });
+
+        const orderItems = items.map((item) => ({
+          name: item.name,
+          category: item.category,
+          specification: item.specification,
+          quantity: item.quantity,
+          unit: item.unit,
+          unitPrice: item.unitPrice,
+        }));
+
+        const [order] = await ctx.db
+          .insert(purchaseOrders)
+          .values({
+            projectId: input.projectId,
+            vendorId: matchedVendor?.id || null,
+            status: 'draft',
+            items: orderItems,
+            totalAmount,
+            currency: input.currency,
+            expectedDelivery,
+            notes: `Category: ${category}`,
+          })
+          .returning();
+        if (!order) throw new Error('Failed to create purchase order');
+
+        createdOrders.push({
+          id: order.id,
+          category,
+          items: orderItems,
+          totalAmount,
+          vendorId: matchedVendor?.id || null,
+          vendorName: matchedVendor?.name || null,
+          expectedDelivery: expectedDelivery.toISOString(),
+        });
+      }
+
+      // Update job as completed
+      const outputJson = {
+        orders: createdOrders,
+        totalOrders: createdOrders.length,
+        totalAmount: createdOrders.reduce((s, o) => s + o.totalAmount, 0),
+        currency: input.currency,
+      };
+
+      await ctx.db
+        .update(jobs)
+        .set({
+          status: 'completed',
+          outputJson,
+          progress: 100,
+          completedAt: new Date(),
+        })
+        .where(eq(jobs.id, job.id));
+
+      return { ...job, status: 'completed', outputJson };
     }),
 
   // Poll job and persist results when complete
@@ -200,19 +258,17 @@ export const procurementRouter = router({
         })
         .where(eq(purchaseOrders.id, input.id))
         .returning();
+      if (!updated) throw new Error('Failed to update purchase order');
       return updated;
     }),
 
   trackDelivery: protectedProcedure
     .input(z.object({ orderId: z.string() }))
-    .query(async ({ input }) => {
-      try {
-        const res = await fetch(`${PROCUREMENT_SERVICE_URL}/api/v1/delivery/${input.orderId}`);
-        if (!res.ok) return { status: 'unknown', tracking: null };
-        return res.json();
-      } catch {
-        return { status: 'unknown', tracking: null };
-      }
+    .query(async ({ ctx, input }) => {
+      const order = await ctx.db.query.purchaseOrders.findFirst({
+        where: eq(purchaseOrders.id, input.orderId),
+      });
+      return { status: order?.status || 'unknown', tracking: null };
     }),
 
   jobStatus: protectedProcedure

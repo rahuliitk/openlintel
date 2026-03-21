@@ -23,14 +23,19 @@ interface GanttChartProps {
 }
 
 const TRADE_COLORS: Record<string, string> = {
+  general: 'bg-slate-500',
   demolition: 'bg-red-500',
   civil: 'bg-stone-500',
+  plumbing: 'bg-blue-500',
   'plumbing rough-in': 'bg-blue-500',
+  electrical: 'bg-yellow-500',
   'electrical rough-in': 'bg-yellow-500',
+  hvac: 'bg-violet-500',
   'false ceiling': 'bg-purple-500',
   flooring: 'bg-amber-600',
   carpentry: 'bg-orange-500',
   painting: 'bg-pink-500',
+  fixtures: 'bg-cyan-500',
   'mep fixtures': 'bg-cyan-500',
   'soft furnishing': 'bg-emerald-500',
   cleanup: 'bg-green-600',

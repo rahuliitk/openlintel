@@ -10,12 +10,99 @@ import {
 import { router, protectedProcedure } from '../init';
 import { callLLM } from '@/lib/llm-client';
 
+// ── Algorithmic fallback helpers ──────────────────────────────────────
+function fallbackCostPrediction(project: any) {
+  // Sum all BOM costs across variants
+  let bomTotal = 0;
+  const categoryTotals: Record<string, number> = {};
+
+  for (const room of project.rooms) {
+    for (const variant of room.designVariants) {
+      for (const bom of variant.bomResults) {
+        bomTotal += bom.totalCost ?? 0;
+        const items = (bom.items as Array<Record<string, unknown>>) || [];
+        for (const item of items) {
+          const cat = String(item.category || 'General');
+          const total = Number(item.total || 0);
+          categoryTotals[cat] = (categoryTotals[cat] || 0) + total;
+        }
+      }
+    }
+  }
+
+  // If no BOM data, estimate from room area and budget tiers
+  if (bomTotal === 0) {
+    const COST_PER_SQM: Record<string, number> = {
+      economy: 500, mid_range: 1200, premium: 2500, luxury: 5000,
+    };
+    for (const room of project.rooms) {
+      const areaSqm = ((room.lengthMm || 3000) * (room.widthMm || 3000)) / 1e6;
+      const tier = room.designVariants?.[0]?.budgetTier || 'mid_range';
+      const cost = areaSqm * (COST_PER_SQM[tier] || 1200);
+      bomTotal += cost;
+      categoryTotals['Estimated'] = (categoryTotals['Estimated'] || 0) + cost;
+    }
+  }
+
+  const predictedCost = Math.round(bomTotal * 1.15); // +15% for labor & overhead
+  const confidenceLow = Math.round(predictedCost * 0.85);
+  const confidenceHigh = Math.round(predictedCost * 1.25);
+
+  const riskFactors = [
+    { name: 'Material price fluctuation', impact: predictedCost * 0.08, probability: 0.6 },
+    { name: 'Scope changes', impact: predictedCost * 0.12, probability: 0.4 },
+    { name: 'Labor shortage delays', impact: predictedCost * 0.05, probability: 0.3 },
+  ];
+
+  const breakdown = Object.entries(categoryTotals).map(([category, amount]) => ({
+    category,
+    amount: Math.round(amount),
+  }));
+  if (breakdown.length === 0) {
+    breakdown.push({ category: 'Total Estimated', amount: predictedCost });
+  }
+
+  return { predictedCost, confidenceLow, confidenceHigh, riskFactors, breakdown };
+}
+
+function fallbackTimelinePrediction(project: any) {
+  const roomCount = Math.max(project.rooms.length, 1);
+  const baseDays = 14; // minimum project duration
+  const daysPerRoom = 8;
+
+  const phases = [
+    { phase: 'Site Preparation', days: 3, dependencies: [] },
+    { phase: 'Demolition', days: 2 + roomCount, dependencies: ['Site Preparation'] },
+    { phase: 'Civil & Structural', days: 5 + roomCount * 2, dependencies: ['Demolition'] },
+    { phase: 'Plumbing Rough-in', days: 3 + roomCount, dependencies: ['Civil & Structural'] },
+    { phase: 'Electrical Rough-in', days: 3 + roomCount, dependencies: ['Civil & Structural'] },
+    { phase: 'HVAC Installation', days: 3 + roomCount, dependencies: ['Plumbing Rough-in', 'Electrical Rough-in'] },
+    { phase: 'Carpentry & Woodwork', days: 5 + roomCount * 3, dependencies: ['HVAC Installation'] },
+    { phase: 'Flooring', days: 3 + roomCount, dependencies: ['Carpentry & Woodwork'] },
+    { phase: 'Painting & Finishes', days: 3 + roomCount, dependencies: ['Flooring'] },
+    { phase: 'Fixture Installation', days: 2 + roomCount, dependencies: ['Painting & Finishes'] },
+    { phase: 'Final Cleanup', days: 2, dependencies: ['Fixture Installation'] },
+  ];
+
+  // Critical path = sum of all phases (sequential)
+  const predictedDays = Math.max(baseDays, phases.reduce((s, p) => s + p.days, 0));
+  const confidenceLow = Math.round(predictedDays * 0.85);
+  const confidenceHigh = Math.round(predictedDays * 1.35);
+
+  const criticalRisks = [
+    { name: 'Weather delays', delayDays: Math.round(predictedDays * 0.1), mitigation: 'Schedule buffer for rainy season' },
+    { name: 'Material delivery delays', delayDays: Math.round(predictedDays * 0.08), mitigation: 'Order materials 2 weeks in advance' },
+    { name: 'Permit approvals', delayDays: 7, mitigation: 'Submit permit applications early' },
+  ];
+
+  return { predictedDays, confidenceLow, confidenceHigh, criticalRisks, phaseBreakdown: phases };
+}
+
 export const predictionRouter = router({
   // ── Cost Prediction ──────────────────────────────────────────
   predictCost: protectedProcedure
     .input(z.object({ projectId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      // Verify ownership and gather project data
       const project = await ctx.db.query.projects.findFirst({
         where: and(
           eq(projects.id, input.projectId),
@@ -34,74 +121,51 @@ export const predictionRouter = router({
       });
       if (!project) throw new Error('Project not found');
 
-      // Build the input snapshot from project data
       const inputSnapshot = {
         projectId: project.id,
         projectName: project.name,
         status: project.status,
         rooms: project.rooms.map((room) => ({
-          id: room.id,
-          name: room.name,
-          type: room.type,
-          lengthMm: room.lengthMm,
-          widthMm: room.widthMm,
-          heightMm: room.heightMm,
-          designVariants: room.designVariants.map((variant) => ({
-            id: variant.id,
-            name: variant.name,
-            style: variant.style,
-            budgetTier: variant.budgetTier,
-            bomResults: variant.bomResults.map((bom) => ({
-              id: bom.id,
-              totalCost: bom.totalCost,
-              items: bom.items,
-            })),
+          id: room.id, name: room.name, type: room.type,
+          lengthMm: room.lengthMm, widthMm: room.widthMm, heightMm: room.heightMm,
+          designVariants: room.designVariants.map((v) => ({
+            id: v.id, name: v.name, style: v.style, budgetTier: v.budgetTier,
+            bomResults: v.bomResults.map((b) => ({ id: b.id, totalCost: b.totalCost, items: b.items })),
           })),
         })),
-        schedules: project.schedules.map((sched) => ({
-          id: sched.id,
-          startDate: sched.startDate,
-          endDate: sched.endDate,
-        })),
+        schedules: project.schedules.map((s) => ({ id: s.id, startDate: s.startDate, endDate: s.endDate })),
       };
 
-      const systemPrompt = `You are a construction cost estimation AI. You analyze project data including rooms, design variants, bill-of-materials results, and schedules to predict total project cost with confidence intervals. Always respond with valid JSON matching this schema:
-{
-  "predictedCost": <number>,
-  "confidenceLow": <number>,
-  "confidenceHigh": <number>,
-  "riskFactors": [{ "name": <string>, "impact": <number>, "probability": <number> }],
-  "breakdown": [{ "category": <string>, "amount": <number> }]
-}`;
+      let predictedCost = 0, confidenceLow = 0, confidenceHigh = 0;
+      let riskFactors: unknown[] = [];
+      let breakdown: unknown[] = [];
+      let modelProvider = 'fallback-algorithmic';
 
-      const userPrompt = `Analyze the following project data and predict the total cost with confidence intervals, risk factors, and a cost breakdown by category.
-
-Project snapshot:
-${JSON.stringify(inputSnapshot, null, 2)}`;
-
-      const llmResult = await callLLM(ctx.userId, ctx.db, systemPrompt, userPrompt);
-
-      const predictedCost = Number(llmResult.predictedCost) || 0;
-      const confidenceLow = Number(llmResult.confidenceLow) || 0;
-      const confidenceHigh = Number(llmResult.confidenceHigh) || 0;
-      const riskFactors = Array.isArray(llmResult.riskFactors)
-        ? llmResult.riskFactors
-        : [];
-      const breakdown = Array.isArray(llmResult.breakdown)
-        ? llmResult.breakdown
-        : [];
+      try {
+        const systemPrompt = `You are a construction cost estimation AI. Respond with valid JSON: { "predictedCost": number, "confidenceLow": number, "confidenceHigh": number, "riskFactors": [{ "name": string, "impact": number, "probability": number }], "breakdown": [{ "category": string, "amount": number }] }`;
+        const userPrompt = `Predict total cost for this project:\n${JSON.stringify(inputSnapshot, null, 2)}`;
+        const llmResult = await callLLM(ctx.userId, ctx.db, systemPrompt, userPrompt);
+        predictedCost = Number(llmResult.predictedCost) || 0;
+        confidenceLow = Number(llmResult.confidenceLow) || 0;
+        confidenceHigh = Number(llmResult.confidenceHigh) || 0;
+        riskFactors = Array.isArray(llmResult.riskFactors) ? llmResult.riskFactors : [];
+        breakdown = Array.isArray(llmResult.breakdown) ? llmResult.breakdown : [];
+        modelProvider = 'user-configured';
+      } catch {
+        const fb = fallbackCostPrediction(project);
+        predictedCost = fb.predictedCost;
+        confidenceLow = fb.confidenceLow;
+        confidenceHigh = fb.confidenceHigh;
+        riskFactors = fb.riskFactors;
+        breakdown = fb.breakdown;
+      }
 
       const [prediction] = await ctx.db
         .insert(costPredictions)
         .values({
           projectId: input.projectId,
-          predictedCost,
-          confidenceLow,
-          confidenceHigh,
-          riskFactors,
-          breakdown,
-          modelProvider: 'auto',
-          inputSnapshot,
+          predictedCost, confidenceLow, confidenceHigh,
+          riskFactors, breakdown, modelProvider, inputSnapshot,
         })
         .returning();
 
@@ -112,7 +176,6 @@ ${JSON.stringify(inputSnapshot, null, 2)}`;
   predictTimeline: protectedProcedure
     .input(z.object({ projectId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      // Verify ownership and gather project data
       const project = await ctx.db.query.projects.findFirst({
         where: and(
           eq(projects.id, input.projectId),
@@ -131,74 +194,51 @@ ${JSON.stringify(inputSnapshot, null, 2)}`;
       });
       if (!project) throw new Error('Project not found');
 
-      // Build the input snapshot from project data
       const inputSnapshot = {
         projectId: project.id,
         projectName: project.name,
         status: project.status,
         rooms: project.rooms.map((room) => ({
-          id: room.id,
-          name: room.name,
-          type: room.type,
-          lengthMm: room.lengthMm,
-          widthMm: room.widthMm,
-          heightMm: room.heightMm,
-          designVariants: room.designVariants.map((variant) => ({
-            id: variant.id,
-            name: variant.name,
-            style: variant.style,
-            budgetTier: variant.budgetTier,
-            bomResults: variant.bomResults.map((bom) => ({
-              id: bom.id,
-              totalCost: bom.totalCost,
-              items: bom.items,
-            })),
+          id: room.id, name: room.name, type: room.type,
+          lengthMm: room.lengthMm, widthMm: room.widthMm, heightMm: room.heightMm,
+          designVariants: room.designVariants.map((v) => ({
+            id: v.id, name: v.name, style: v.style, budgetTier: v.budgetTier,
+            bomResults: v.bomResults.map((b) => ({ id: b.id, totalCost: b.totalCost, items: b.items })),
           })),
         })),
-        schedules: project.schedules.map((sched) => ({
-          id: sched.id,
-          startDate: sched.startDate,
-          endDate: sched.endDate,
-        })),
+        schedules: project.schedules.map((s) => ({ id: s.id, startDate: s.startDate, endDate: s.endDate })),
       };
 
-      const systemPrompt = `You are a construction timeline estimation AI. You analyze project data including rooms, design variants, bill-of-materials results, and existing schedules to predict total project duration in days with confidence intervals. Always respond with valid JSON matching this schema:
-{
-  "predictedDays": <number>,
-  "confidenceLow": <number>,
-  "confidenceHigh": <number>,
-  "criticalRisks": [{ "name": <string>, "delayDays": <number>, "mitigation": <string> }],
-  "phaseBreakdown": [{ "phase": <string>, "days": <number>, "dependencies": [<string>] }]
-}`;
+      let predictedDays = 0, confidenceLow = 0, confidenceHigh = 0;
+      let criticalRisks: unknown[] = [];
+      let phaseBreakdown: unknown[] = [];
+      let modelProvider = 'fallback-algorithmic';
 
-      const userPrompt = `Analyze the following project data and predict the total timeline in days with confidence intervals, critical risks, and a phase-by-phase breakdown.
-
-Project snapshot:
-${JSON.stringify(inputSnapshot, null, 2)}`;
-
-      const llmResult = await callLLM(ctx.userId, ctx.db, systemPrompt, userPrompt);
-
-      const predictedDays = Math.round(Number(llmResult.predictedDays) || 0);
-      const confidenceLow = Math.round(Number(llmResult.confidenceLow) || 0);
-      const confidenceHigh = Math.round(Number(llmResult.confidenceHigh) || 0);
-      const criticalRisks = Array.isArray(llmResult.criticalRisks)
-        ? llmResult.criticalRisks
-        : [];
-      const phaseBreakdown = Array.isArray(llmResult.phaseBreakdown)
-        ? llmResult.phaseBreakdown
-        : [];
+      try {
+        const systemPrompt = `You are a construction timeline estimation AI. Respond with valid JSON: { "predictedDays": number, "confidenceLow": number, "confidenceHigh": number, "criticalRisks": [{ "name": string, "delayDays": number, "mitigation": string }], "phaseBreakdown": [{ "phase": string, "days": number, "dependencies": [string] }] }`;
+        const userPrompt = `Predict timeline for this project:\n${JSON.stringify(inputSnapshot, null, 2)}`;
+        const llmResult = await callLLM(ctx.userId, ctx.db, systemPrompt, userPrompt);
+        predictedDays = Math.round(Number(llmResult.predictedDays) || 0);
+        confidenceLow = Math.round(Number(llmResult.confidenceLow) || 0);
+        confidenceHigh = Math.round(Number(llmResult.confidenceHigh) || 0);
+        criticalRisks = Array.isArray(llmResult.criticalRisks) ? llmResult.criticalRisks : [];
+        phaseBreakdown = Array.isArray(llmResult.phaseBreakdown) ? llmResult.phaseBreakdown : [];
+        modelProvider = 'user-configured';
+      } catch {
+        const fb = fallbackTimelinePrediction(project);
+        predictedDays = fb.predictedDays;
+        confidenceLow = fb.confidenceLow;
+        confidenceHigh = fb.confidenceHigh;
+        criticalRisks = fb.criticalRisks;
+        phaseBreakdown = fb.phaseBreakdown;
+      }
 
       const [prediction] = await ctx.db
         .insert(timelinePredictions)
         .values({
           projectId: input.projectId,
-          predictedDays,
-          confidenceLow,
-          confidenceHigh,
-          criticalRisks,
-          phaseBreakdown,
-          modelProvider: 'auto',
-          inputSnapshot,
+          predictedDays, confidenceLow, confidenceHigh,
+          criticalRisks, phaseBreakdown, modelProvider, inputSnapshot,
         })
         .returning();
 

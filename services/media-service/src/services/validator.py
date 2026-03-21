@@ -17,15 +17,37 @@ from PIL import Image
 # ---------------------------------------------------------------------------
 
 ALLOWED_MIME_TYPES: dict[str, list[str]] = {
+    # Images
     "image/jpeg": [".jpg", ".jpeg"],
     "image/png": [".png"],
     "image/webp": [".webp"],
     "image/gif": [".gif"],
+    # PDF
     "application/pdf": [".pdf"],
+    # DWG (no official IANA type — browsers vary)
+    "application/acad": [".dwg"],
+    "application/x-acad": [".dwg"],
+    "application/x-autocad": [".dwg"],
+    "application/dwg": [".dwg"],
+    "image/x-dwg": [".dwg"],
+    "image/vnd.dwg": [".dwg"],
+    # DXF
+    "application/dxf": [".dxf"],
+    "application/x-dxf": [".dxf"],
+    "image/vnd.dxf": [".dxf"],
+    "image/x-dxf": [".dxf"],
+    # Fallback for CAD files
+    "application/octet-stream": [],
 }
 
-# 20 MB
-MAX_FILE_SIZE: int = 20 * 1024 * 1024
+# Extensions that are always allowed (overrides MIME check)
+ALLOWED_EXTENSIONS: set[str] = {".dwg", ".dxf", ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+# CAD file extensions (skip image integrity checks)
+CAD_EXTENSIONS: set[str] = {".dwg", ".dxf"}
+
+# 50 MB (was 20MB — DWG files are commonly 10-40MB)
+MAX_FILE_SIZE: int = 50 * 1024 * 1024
 
 # Maximum resolution (width or height) in pixels — 16384 px
 MAX_RESOLUTION: int = 16384
@@ -107,9 +129,18 @@ def _check_image_integrity(file_bytes: bytes, content_type: str) -> ValidationRe
     return ValidationResult(valid=True, error=None)
 
 
+def _get_extension(filename: str) -> str:
+    """Extract lowercase file extension with dot."""
+    if not filename:
+        return ""
+    parts = filename.rsplit(".", 1)
+    return f".{parts[-1].lower()}" if len(parts) > 1 else ""
+
+
 def validate_file(
     file_bytes: bytes,
     content_type: str,
+    filename: str = "",
 ) -> ValidationResult:
     """Run all validations on an uploaded file.
 
@@ -120,6 +151,8 @@ def validate_file(
     content_type:
         The declared MIME type (from the ``Content-Type`` header or the
         ``UploadFile.content_type`` attribute).
+    filename:
+        Original filename — used for extension-based CAD file detection.
 
     Returns
     -------
@@ -127,19 +160,27 @@ def validate_file(
         ``(True, None)`` when all checks pass, or ``(False, error_message)``
         on the first failing check.
     """
-    # 1. MIME type
-    result = _check_mime_type(content_type)
-    if not result.valid:
-        return result
+    # Extension-based override for CAD files
+    ext = _get_extension(filename)
+    is_cad = ext in CAD_EXTENSIONS
 
-    # 2. File size
+    # 1. File size
     result = _check_file_size(len(file_bytes))
     if not result.valid:
         return result
 
-    # 3. Image integrity and resolution
-    result = _check_image_integrity(file_bytes, content_type)
-    if not result.valid:
-        return result
+    # 2. MIME check — relaxed for known CAD extensions
+    if not is_cad:
+        result = _check_mime_type(content_type)
+        if not result.valid:
+            # Also check extension
+            if ext not in ALLOWED_EXTENSIONS:
+                return result
+
+    # 3. Image integrity — skip for CAD and PDF files
+    if not is_cad and content_type != "application/pdf":
+        result = _check_image_integrity(file_bytes, content_type)
+        if not result.valid:
+            return result
 
     return ValidationResult(valid=True, error=None)

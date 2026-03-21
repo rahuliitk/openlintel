@@ -134,12 +134,35 @@ export function CutListTable({ panels }: CutListTableProps) {
     }
   };
 
+  // Normalize panels to handle legacy data with different field names
+  const normalizedPanels = useMemo(() => {
+    return panels.map((p: any, idx: number) => ({
+      id: p.id || `panel-${idx}`,
+      partName: p.partName || p.name || 'Unknown',
+      furnitureUnit: p.furnitureUnit || 'General',
+      length: p.length ?? p.lengthMm ?? 0,
+      width: p.width ?? p.widthMm ?? 0,
+      thickness: p.thickness ?? 18,
+      material: p.material || 'Unknown',
+      grain: p.grain || p.grainDirection || 'none',
+      edgeBanding: typeof p.edgeBanding === 'object' && !Array.isArray(p.edgeBanding)
+        ? p.edgeBanding
+        : {
+            top: Array.isArray(p.edgeBanding) ? p.edgeBanding.includes('top') : false,
+            bottom: Array.isArray(p.edgeBanding) ? p.edgeBanding.includes('bottom') : false,
+            left: Array.isArray(p.edgeBanding) ? p.edgeBanding.includes('left') : false,
+            right: Array.isArray(p.edgeBanding) ? p.edgeBanding.includes('right') : false,
+          },
+      quantity: p.quantity ?? 0,
+    })) as CutListPanel[];
+  }, [panels]);
+
   const sorted = useMemo(() => {
-    return [...panels].sort((a, b) => {
+    return [...normalizedPanels].sort((a, b) => {
       let cmp = 0;
       switch (sortField) {
         case 'partName':
-          cmp = a.partName.localeCompare(b.partName);
+          cmp = (a.partName || '').localeCompare(b.partName || '');
           break;
         case 'length':
           cmp = a.length - b.length;
@@ -151,7 +174,7 @@ export function CutListTable({ panels }: CutListTableProps) {
           cmp = a.thickness - b.thickness;
           break;
         case 'material':
-          cmp = a.material.localeCompare(b.material);
+          cmp = (a.material || '').localeCompare(b.material || '');
           break;
         case 'quantity':
           cmp = a.quantity - b.quantity;
@@ -159,11 +182,11 @@ export function CutListTable({ panels }: CutListTableProps) {
       }
       return sortDir === 'asc' ? cmp : -cmp;
     });
-  }, [panels, sortField, sortDir]);
+  }, [normalizedPanels, sortField, sortDir]);
 
   const totalPanels = useMemo(
-    () => panels.reduce((sum, p) => sum + p.quantity, 0),
-    [panels],
+    () => normalizedPanels.reduce((sum, p) => sum + p.quantity, 0),
+    [normalizedPanels],
   );
 
   const SortIcon = ({ field }: { field: SortField }) => {
@@ -272,7 +295,7 @@ export function CutListTable({ panels }: CutListTableProps) {
           {/* Summary row */}
           <tr className="border-t-2 bg-muted/50 font-bold">
             <td className="px-3 py-3" colSpan={8}>
-              Total: {panels.length} unique parts
+              Total: {normalizedPanels.length} unique parts
             </td>
             <td className="px-3 py-3 text-right tabular-nums">{totalPanels}</td>
           </tr>
@@ -304,8 +327,8 @@ export function HardwareScheduleTable({ items }: HardwareScheduleTableProps) {
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => (
-            <tr key={item.id} className="border-b hover:bg-muted/20">
+          {items.map((item, idx) => (
+            <tr key={item.id || `hw-${idx}`} className="border-b hover:bg-muted/20">
               <td className="px-3 py-2 font-medium">{item.name}</td>
               <td className="px-3 py-2 text-muted-foreground">{item.specification}</td>
               <td className="px-3 py-2 text-muted-foreground">{item.furnitureUnit}</td>

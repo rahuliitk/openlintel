@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { designVariants, rooms, projects, jobs, eq, and } from '@openlintel/db';
 import { router, protectedProcedure } from '../init';
+import OpenAI from 'openai';
 
-const DESIGN_SERVICE_URL = process.env.DESIGN_SERVICE_URL || 'http://localhost:8001';
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export const designVariantRouter = router({
   listByRoom: protectedProcedure
@@ -29,12 +30,12 @@ export const designVariantRouter = router({
       });
       if (!project) throw new Error('Project not found');
 
-      // Flatten all variants across rooms, attaching room info
       return project.rooms.flatMap((room) =>
         room.designVariants.map((variant) => ({
           ...variant,
           roomName: room.name,
           roomId: room.id,
+          roomType: room.type,
         })),
       );
     }),
@@ -56,6 +57,7 @@ export const designVariantRouter = router({
       if (!room || room.project.userId !== ctx.userId) throw new Error('Room not found');
 
       const [variant] = await ctx.db.insert(designVariants).values(input).returning();
+      if (!variant) throw new Error('Failed to create design variant');
       return variant;
     }),
 
@@ -84,6 +86,7 @@ export const designVariantRouter = router({
         .set(data)
         .where(eq(designVariants.id, id))
         .returning();
+      if (!updated) throw new Error('Failed to update design variant');
       return updated;
     }),
 
@@ -150,6 +153,7 @@ export const designVariantRouter = router({
           designVariantId: input.designVariantId,
         })
         .returning();
+      if (!job) throw new Error('Failed to create job');
 
       // Update variant with job reference
       await ctx.db
@@ -157,29 +161,115 @@ export const designVariantRouter = router({
         .set({ jobId: job.id })
         .where(eq(designVariants.id, input.designVariantId));
 
-      // Trigger design-engine service (fire-and-forget)
-      fetch(`${DESIGN_SERVICE_URL}/api/v1/designs/job`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          job_id: job.id,
-          design_variant_id: input.designVariantId,
-          user_id: ctx.userId,
-          room: {
-            id: variant.room.id,
-            type: variant.room.type,
-            length_mm: variant.room.lengthMm ?? 0,
-            width_mm: variant.room.widthMm ?? 0,
-            height_mm: variant.room.heightMm ?? 2700,
-          },
-          style: input.style,
-          budget_tier: input.budgetTier,
-          constraints: input.constraints ?? [],
-          additional_prompt: input.additionalPrompt,
-        }),
-      }).catch(() => {
-        // Service may be down; job stays pending
-      });
+      // Run design generation in background — return job immediately
+      const db = ctx.db;
+      const designVariantId = input.designVariantId;
+      const genVariant = variant;
+      const genInput = input;
+
+      void (async () => {
+        try {
+          await db
+            .update(jobs)
+            .set({ status: 'running', startedAt: new Date(), progress: 10 })
+            .where(eq(jobs.id, job.id));
+
+          const lengthMm = genVariant.room.lengthMm ?? 4000;
+          const widthMm = genVariant.room.widthMm ?? 3500;
+          const heightMm = genVariant.room.heightMm ?? 2700;
+          const lengthM = lengthMm / 1000;
+          const widthM = widthMm / 1000;
+          const areaSqm = Math.round(lengthM * widthM * 100) / 100;
+          const constraints = genInput.constraints ?? [];
+
+          const prompt = `Generate an interior design spec for a ${genVariant.room.type.replace(/_/g, ' ')} room.
+
+Room: ${lengthM}m x ${widthM}m x ${heightMm / 1000}m (${areaSqm}sqm), Style: ${genInput.style}, Budget: ${genInput.budgetTier}
+${constraints.length ? `Constraints: ${constraints.join('; ')}` : ''}
+${genInput.additionalPrompt ? `Notes: ${genInput.additionalPrompt}` : ''}
+
+Return compact JSON: {"roomType":"...","dimensions":{"lengthMm":${lengthMm},"widthMm":${widthMm},"heightMm":${heightMm},"areaSqm":${areaSqm}},"style":"${genInput.style}","budgetTier":"${genInput.budgetTier}","designConcept":"2-3 sentences","furniture":[{"name":"...","material":"...","dimensions":"WxDxH mm","position":"...","estimatedCost":0,"notes":"..."}],"colorPalette":[{"hex":"#HEX","name":"...","usage":"..."}],"materialSuggestions":[{"name":"...","application":"...","specification":"..."}],"layoutDescription":"...","lightingPlan":"...","flooringRecommendation":{"type":"...","specification":"...","pattern":"..."},"wallTreatment":"...","constraints":${JSON.stringify(constraints.length ? constraints : ['None specified'])},"estimatedTotalCost":{"min":0,"max":0,"currency":"USD"}}
+
+Include 5-8 furniture items, 5-6 colors, 4-6 materials. Realistic costs.`;
+
+          await db
+            .update(jobs)
+            .set({ progress: 30 })
+            .where(eq(jobs.id, job.id));
+
+          const completion = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'system', content: 'You are an expert interior designer. Output only valid compact JSON. Keep descriptions concise.' },
+              { role: 'user', content: prompt },
+            ],
+            temperature: 0.7,
+            max_tokens: 16384,
+            response_format: { type: 'json_object' },
+          });
+
+          await db
+            .update(jobs)
+            .set({ progress: 70 })
+            .where(eq(jobs.id, job.id));
+
+          const finishReason = completion.choices[0]?.finish_reason;
+          const responseText = completion.choices[0]?.message?.content ?? '';
+          console.log('[Design] OpenAI response length:', responseText.length, 'finish_reason:', finishReason);
+
+          if (finishReason === 'length') {
+            throw new Error('Design response was truncated by token limit');
+          }
+
+          if (!responseText.trim()) {
+            throw new Error(`OpenAI returned empty response (finish_reason: ${finishReason})`);
+          }
+
+          let spec: Record<string, unknown>;
+          try {
+            spec = JSON.parse(responseText);
+          } catch {
+            const cleaned = responseText.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+            const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              spec = JSON.parse(jsonMatch[0]);
+            } else {
+              console.error('[Design] Failed to parse response:', responseText.slice(0, 500));
+              throw new Error('Failed to parse AI response as JSON');
+            }
+          }
+
+          await db
+            .update(designVariants)
+            .set({ specJson: spec, promptUsed: prompt })
+            .where(eq(designVariants.id, designVariantId));
+
+          await db
+            .update(jobs)
+            .set({
+              status: 'completed',
+              progress: 100,
+              completedAt: new Date(),
+              outputJson: {
+                designVariantId,
+                furnitureCount: Array.isArray(spec.furniture) ? spec.furniture.length : 0,
+                colorCount: Array.isArray(spec.colorPalette) ? spec.colorPalette.length : 0,
+                areaSqm,
+                model: 'gpt-4o-mini',
+              },
+            })
+            .where(eq(jobs.id, job.id));
+
+          console.log('[Design] Generation completed successfully');
+        } catch (error) {
+          console.error('[Design Generation Error]', error);
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error during design generation';
+          await db
+            .update(jobs)
+            .set({ status: 'failed', error: errorMessage, completedAt: new Date() })
+            .where(eq(jobs.id, job.id));
+        }
+      })();
 
       return job;
     }),

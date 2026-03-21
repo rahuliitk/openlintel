@@ -42,6 +42,7 @@ import {
   LayoutGrid,
   Wrench,
   BarChart3,
+  Trash2,
 } from 'lucide-react';
 
 export default function CutListPage({ params }: { params: Promise<{ id: string }> }) {
@@ -51,6 +52,7 @@ export default function CutListPage({ params }: { params: Promise<{ id: string }
   const [generateOpen, setGenerateOpen] = useState(false);
   const [selectedVariant, setSelectedVariant] = useState('');
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [selectedCutlistId, setSelectedCutlistId] = useState<string | null>(null);
 
   const { data: variants = [], isLoading: loadingVariants } =
     trpc.designVariant.listByProject.useQuery({ projectId });
@@ -96,22 +98,38 @@ export default function CutListPage({ params }: { params: Promise<{ id: string }
     generateCutlist.mutate({ designVariantId: selectedVariant });
   };
 
-  // Parse data from the most recent result
-  const latestResult = cutlistResults.length > 0 ? cutlistResults[0] : null;
-  const panels: CutListPanel[] = latestResult?.panels
-    ? (latestResult.panels as CutListPanel[])
+  // Parse data from the selected or most recent result
+  const activeResult = selectedCutlistId
+    ? cutlistResults.find((c: any) => c.id === selectedCutlistId) || cutlistResults[0]
+    : cutlistResults.length > 0 ? cutlistResults[0] : null;
+  const panels: CutListPanel[] = activeResult?.panels
+    ? (activeResult.panels as CutListPanel[])
     : [];
-  const hardware: HardwareItem[] = latestResult?.hardware
-    ? (latestResult.hardware as HardwareItem[])
+  const hardware: HardwareItem[] = activeResult?.hardware
+    ? (activeResult.hardware as HardwareItem[])
     : [];
-  const nestingSheets: NestingSheet[] = latestResult?.nestingResult
-    ? (latestResult.nestingResult as NestingSheet[])
-    : [];
-  const totalSheets = latestResult?.totalSheets || 0;
-  const wastePercent = latestResult?.wastePercent || 0;
+  // Handle both old format (object with .sheets) and new format (array)
+  const rawNesting = activeResult?.nestingResult;
+  const nestingSheets: NestingSheet[] = Array.isArray(rawNesting)
+    ? rawNesting
+    : Array.isArray((rawNesting as any)?.sheets)
+      ? (rawNesting as any).sheets
+      : [];
+  const totalSheets = activeResult?.totalSheets || nestingSheets.length || 0;
+  const wastePercent = activeResult?.wastePercent || 0;
 
   const totalPanelQty = panels.reduce((sum, p) => sum + p.quantity, 0);
   const uniqueMaterials = new Set(panels.map((p) => p.material)).size;
+
+  const deleteCutlist = trpc.cutlist.delete.useMutation({
+    onSuccess: () => {
+      utils.cutlist.listByProject.invalidate({ projectId });
+      toast({ title: 'Cut list deleted' });
+    },
+    onError: (err) => {
+      toast({ title: 'Failed to delete cut list', description: err.message });
+    },
+  });
 
   const handleExportDxf = () => {
     if (panels.length === 0) {
@@ -291,25 +309,59 @@ export default function CutListPage({ params }: { params: Promise<{ id: string }
           </div>
 
           {/* Metadata */}
-          {latestResult && (
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <span>
-                Generated: {new Date(latestResult.createdAt).toLocaleDateString()}
-              </span>
-              {'variantName' in latestResult && (
-                <>
-                  <span className="h-1 w-1 rounded-full bg-muted-foreground" />
-                  <span>Variant: {(latestResult as { variantName: string }).variantName}</span>
-                </>
-              )}
-              {'roomName' in latestResult && (
-                <>
-                  <span className="h-1 w-1 rounded-full bg-muted-foreground" />
-                  <span>Room: {(latestResult as { roomName: string }).roomName}</span>
-                </>
-              )}
-              <span className="h-1 w-1 rounded-full bg-muted-foreground" />
-              <span>{uniqueMaterials} material{uniqueMaterials !== 1 ? 's' : ''}</span>
+          {activeResult && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                <span>
+                  Generated: {new Date(activeResult.createdAt).toLocaleDateString()}
+                </span>
+                {'variantName' in activeResult && (
+                  <>
+                    <span className="h-1 w-1 rounded-full bg-muted-foreground" />
+                    <span>Variant: {(activeResult as { variantName: string }).variantName}</span>
+                  </>
+                )}
+                {'roomName' in activeResult && (
+                  <>
+                    <span className="h-1 w-1 rounded-full bg-muted-foreground" />
+                    <span>Room: {(activeResult as { roomName: string }).roomName}</span>
+                  </>
+                )}
+                <span className="h-1 w-1 rounded-full bg-muted-foreground" />
+                <span>{uniqueMaterials} material{uniqueMaterials !== 1 ? 's' : ''}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {cutlistResults.length > 1 && (
+                  <Select
+                    value={activeResult.id}
+                    onValueChange={(val) => setSelectedCutlistId(val)}
+                  >
+                    <SelectTrigger className="w-[280px]">
+                      <SelectValue placeholder="Select cut list" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {cutlistResults.map((cl: any) => (
+                        <SelectItem key={cl.id} value={cl.id}>
+                          {cl.variantName || 'Variant'} — {new Date(cl.createdAt).toLocaleDateString()}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  disabled={deleteCutlist.isPending}
+                  onClick={() => {
+                    deleteCutlist.mutate({ cutlistResultId: activeResult.id });
+                    setSelectedCutlistId(null);
+                  }}
+                >
+                  <Trash2 className="mr-1 h-4 w-4" />
+                  Delete
+                </Button>
+              </div>
             </div>
           )}
 

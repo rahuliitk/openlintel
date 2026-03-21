@@ -2,7 +2,11 @@
 
 import { use, useState, useEffect } from 'react';
 import { trpc } from '@/lib/trpc/client';
-import { DrawingPreview } from '@/components/drawing-preview';
+import dynamic from 'next/dynamic';
+
+const DrawingPreview = dynamic(() => import('@/components/drawing-preview').then(m => m.DrawingPreview), {
+  loading: () => <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">Loading preview...</div>,
+});
 import {
   Button,
   Card,
@@ -35,6 +39,7 @@ import {
   Loader2,
   Image as ImageIcon,
   FileDown,
+  Trash2,
 } from 'lucide-react';
 import { cn } from '@openlintel/ui';
 
@@ -86,6 +91,20 @@ export default function DrawingsPage({ params }: { params: Promise<{ id: string 
     },
     onError: (err) => {
       toast({ title: 'Failed to start drawing generation', description: err.message });
+    },
+  });
+
+  const deleteDrawing = trpc.drawing.delete.useMutation({
+    onSuccess: () => {
+      utils.drawing.listByProject.invalidate({ projectId });
+      toast({ title: 'Drawing deleted' });
+    },
+  });
+
+  const deleteAllDrawings = trpc.drawing.deleteAll.useMutation({
+    onSuccess: (result) => {
+      utils.drawing.listByProject.invalidate({ projectId });
+      toast({ title: `Deleted ${result.deleted} drawings` });
     },
   });
 
@@ -162,7 +181,23 @@ export default function DrawingsPage({ params }: { params: Promise<{ id: string 
             )}
           </p>
         </div>
-        <Dialog open={generateOpen} onOpenChange={setGenerateOpen}>
+        <div className="flex items-center gap-2">
+          {drawings.length > 0 && (
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deleteAllDrawings.isPending}
+              onClick={() => {
+                if (confirm('Delete all drawings? This cannot be undone.')) {
+                  deleteAllDrawings.mutate({ projectId });
+                }
+              }}
+            >
+              <Trash2 className="mr-1 h-4 w-4" />
+              {deleteAllDrawings.isPending ? 'Deleting...' : 'Delete All'}
+            </Button>
+          )}
+          <Dialog open={generateOpen} onOpenChange={setGenerateOpen}>
           <DialogTrigger asChild>
             <Button size="sm" disabled={variants.length === 0 || Boolean(activeJobId)}>
               {activeJobId ? (
@@ -233,6 +268,7 @@ export default function DrawingsPage({ params }: { params: Promise<{ id: string 
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {/* Job progress */}
@@ -393,9 +429,25 @@ export default function DrawingsPage({ params }: { params: Promise<{ id: string 
                       </span>
                     )}
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {new Date(drawing.createdAt).toLocaleDateString()}
-                  </p>
+                  <div className="mt-2 flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      {new Date(drawing.createdAt).toLocaleDateString()}
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs text-destructive hover:text-destructive"
+                      disabled={deleteDrawing.isPending}
+                      onClick={() => {
+                        if (confirm('Delete this drawing?')) {
+                          deleteDrawing.mutate({ id: drawing.id });
+                        }
+                      }}
+                    >
+                      <Trash2 className="mr-1 h-3 w-3" />
+                      Delete
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
             );

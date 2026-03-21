@@ -18,7 +18,9 @@ Typical usage::
     dxf_path = pipeline.export_dxf(result, output_path="output.dxf")
 """
 
+from openlintel_digitizer.dwg_converter import DWGConverter
 from openlintel_digitizer.dxf_generator import DXFGenerator
+from openlintel_digitizer.pdf_extractor import PDFFloorPlanExtractor
 from openlintel_digitizer.pipeline import FloorPlanPipeline
 from openlintel_digitizer.schemas import (
     DoorWindow,
@@ -30,6 +32,8 @@ from openlintel_digitizer.schemas import (
 __all__ = [
     "FloorPlanPipeline",
     "DXFGenerator",
+    "DWGConverter",
+    "PDFFloorPlanExtractor",
     "FloorPlanData",
     "RoomPolygon",
     "DoorWindow",

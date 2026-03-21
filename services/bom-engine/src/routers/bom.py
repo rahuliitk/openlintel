@@ -135,6 +135,82 @@ async def generate_bom(
         ) from exc
 
 
+# -- POST /api/v1/bom/from-floor-plan — Structural BOM from geometry ----------
+
+from pydantic import BaseModel as _BaseModel, Field as _Field
+
+
+class FloorPlanBOMRequest(_BaseModel):
+    """Request body for POST /api/v1/bom/from-floor-plan."""
+    job_id: str = _Field(description="Job ID for status tracking")
+    project_id: str = _Field(description="Project ID")
+    floor_plan_data: dict[str, Any] = _Field(
+        description="FloorPlanData output from digitization job"
+    )
+    budget_tier: str = _Field(default="mid_range")
+    currency: str = _Field(default="INR")
+
+
+@router.post(
+    "/from-floor-plan",
+    response_model=BOMGenerateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Generate a structural BOM from floor plan geometry",
+    description=(
+        "Accepts FloorPlanData (walls, rooms, openings) from a floor plan "
+        "digitization job and generates a construction BOM with material "
+        "quantities, pricing, and waste factors. Does NOT require a design "
+        "variant -- works directly from structural geometry."
+    ),
+)
+async def generate_bom_from_floor_plan(
+    request: FloorPlanBOMRequest,
+    background_tasks: BackgroundTasks,
+) -> BOMGenerateResponse:
+    """Generate a structural BOM from floor plan data."""
+    from src.services.structural_bom import StructuralBOMGenerator
+
+    bom_id = str(uuid.uuid4())
+
+    logger.info(
+        "structural_bom_request",
+        bom_id=bom_id,
+        project_id=request.project_id,
+        walls=len(request.floor_plan_data.get("walls", [])),
+        rooms=len(request.floor_plan_data.get("rooms", [])),
+    )
+
+    try:
+        generator = StructuralBOMGenerator(
+            budget_tier=request.budget_tier,
+            currency=request.currency,
+        )
+
+        result = generator.generate(
+            floor_plan_data=request.floor_plan_data,
+            project_id=request.project_id,
+            bom_id=bom_id,
+        )
+
+        # Store result
+        bom_data = result.model_dump(mode="json")
+        _bom_store[bom_id] = bom_data
+        await cache_set(f"bom:{bom_id}", bom_data, ttl=_BOM_CACHE_TTL)
+
+        return BOMGenerateResponse(
+            bom_id=bom_id,
+            status=BOMStatus.COMPLETE,
+            message="Structural BOM generation complete.",
+        )
+
+    except Exception as exc:
+        logger.error("structural_bom_failed", bom_id=bom_id, error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Structural BOM generation failed: {exc}",
+        ) from exc
+
+
 # -- POST /api/v1/bom/job — Internal endpoint (called by tRPC) ---------------
 
 async def _run_bom_job(

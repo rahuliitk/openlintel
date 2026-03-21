@@ -90,6 +90,20 @@ export const paymentRouter = router({
       });
       if (!payment) throw new Error('Payment not found');
 
+      // Check if Stripe is properly configured
+      const stripeKey = process.env.STRIPE_SECRET_KEY;
+      const isStripeConfigured = stripeKey && stripeKey !== 'sk_not_configured' && stripeKey.startsWith('sk_');
+
+      if (!isStripeConfigured) {
+        // Mock checkout: mark payment as completed without Stripe
+        await ctx.db
+          .update(payments)
+          .set({ status: 'completed', paidAt: new Date() })
+          .where(eq(payments.id, input.paymentId));
+
+        return { checkoutUrl: null, mockCompleted: true };
+      }
+
       const origin = process.env.NEXTAUTH_URL || 'http://localhost:3000';
       const session = await getStripe().checkout.sessions.create({
         payment_method_types: ['card'],

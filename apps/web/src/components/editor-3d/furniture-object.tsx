@@ -159,7 +159,7 @@ export function FurnitureObject({
     return (
       <TransformControls
         ref={transformRef}
-        object={meshRef}
+        object={meshRef as any}
         mode={transformMode}
         size={0.6}
         translationSnap={snapEnabled ? gridSize : undefined}

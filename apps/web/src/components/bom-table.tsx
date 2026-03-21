@@ -226,8 +226,8 @@ export function BOMTable({ items, currency = 'USD' }: BOMTableProps) {
 
                 {/* Item rows */}
                 {!isCollapsed &&
-                  catItems.map((item) => (
-                    <tr key={item.id} className="border-b hover:bg-muted/20">
+                  catItems.map((item, idx) => (
+                    <tr key={item.id || `${category}-${idx}`} className="border-b hover:bg-muted/20">
                       <td className="px-3 py-2" />
                       <td className="px-3 py-2 font-medium">{item.name}</td>
                       <td className="px-3 py-2 text-muted-foreground">{item.specification}</td>

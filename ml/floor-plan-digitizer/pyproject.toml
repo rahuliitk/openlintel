@@ -18,6 +18,9 @@ dependencies = [
     "litellm>=1.40,<2",
     "pydantic>=2.7,<3",
     "structlog>=24.1,<25",
+    # PDF floor plan extraction
+    "pdf2image>=1.16,<2",
+    "pdfplumber>=0.11,<1",
 ]
 
 [project.optional-dependencies]

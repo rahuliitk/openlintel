@@ -26,6 +26,7 @@ import {
   SelectValue,
   SelectContent,
   SelectItem,
+  Separator,
   toast,
 } from '@openlintel/ui';
 import { Palette, Plus, Trash2, ImageIcon } from 'lucide-react';
@@ -149,6 +150,7 @@ export default function DesignsPage({ params }: { params: Promise<{ id: string }
                     </SelectContent>
                   </Select>
                 </div>
+
                 <div className="space-y-2">
                   <Label htmlFor="design-name">Name</Label>
                   <Input
@@ -223,52 +225,62 @@ export default function DesignsPage({ params }: { params: Promise<{ id: string }
         </Card>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filteredVariants.map((variant: any) => (
-            <Card key={variant.id} className="overflow-hidden">
-              <Link href={`/project/${projectId}/designs/${variant.id}`}>
-                <div className="flex aspect-video items-center justify-center bg-muted">
-                  {variant.renderUrl ? (
-                    <img
-                      src={variant.renderUrl}
-                      alt={variant.name}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <ImageIcon className="h-10 w-10 text-muted-foreground/50" />
-                  )}
-                </div>
-              </Link>
-              <CardHeader className="pb-2">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <Link href={`/project/${projectId}/designs/${variant.id}`}>
-                      <CardTitle className="text-base hover:underline">{variant.name}</CardTitle>
-                    </Link>
-                    <CardDescription>{variant.roomName}</CardDescription>
+          {filteredVariants.map((variant: any) => {
+            const renderUrls = (variant.renderUrls as string[] | null) ?? [];
+            const thumbUrl = variant.renderUrl ?? renderUrls[0] ?? null;
+
+            return (
+              <Card key={variant.id} className="overflow-hidden">
+                <Link href={`/project/${projectId}/designs/${variant.id}`}>
+                  <div className="flex aspect-video items-center justify-center bg-muted">
+                    {thumbUrl ? (
+                      <img
+                        src={thumbUrl}
+                        alt={variant.name}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <ImageIcon className="h-10 w-10 text-muted-foreground/50" />
+                    )}
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      if (confirm('Delete this design variant?')) {
-                        deleteVariant.mutate({ id: variant.id });
-                      }
-                    }}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary">{variant.style}</Badge>
-                  <Badge variant="outline">{variant.budgetTier}</Badge>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                </Link>
+                <CardHeader className="pb-2">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <Link href={`/project/${projectId}/designs/${variant.id}`}>
+                        <CardTitle className="text-base hover:underline">{variant.name}</CardTitle>
+                      </Link>
+                      <CardDescription>{variant.roomName}</CardDescription>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (confirm('Delete this design variant?')) {
+                          deleteVariant.mutate({ id: variant.id });
+                        }
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary">{variant.style}</Badge>
+                    <Badge variant="outline">{variant.budgetTier}</Badge>
+                    {renderUrls.length > 0 && (
+                      <Badge variant="outline" className="text-xs">
+                        {renderUrls.length} images
+                      </Badge>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>

@@ -92,7 +92,7 @@ export default function CollaborationPage({ params }: { params: Promise<{ id: st
   const decisionsQ = trpc.collaboration.listDecisions.useQuery(
     { projectId }, { enabled: activeTab === 'decisions' },
   );
-  const roomsQ = trpc.room.listByProject.useQuery({ projectId });
+  const roomsQ = trpc.room.list.useQuery({ projectId });
 
   // ── Mutations ──
 

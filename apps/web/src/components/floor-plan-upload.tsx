@@ -4,59 +4,47 @@ import { useState, useRef, useCallback } from 'react';
 import {
   Button,
   Progress,
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
   Badge,
   toast,
 } from '@openlintel/ui';
-import { Upload, X, FileImage, FileText, CheckCircle2 } from 'lucide-react';
-import { JobProgress } from './job-progress';
+import { Upload, X, FileImage } from 'lucide-react';
 
-const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.webp,.pdf,.dxf,.dwg';
+const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.webp,.gif,.pdf,.dwg,.dxf';
 
 interface FloorPlanUploadProps {
   projectId: string;
+  disabled?: boolean;
   onUploadComplete?: (upload: Record<string, unknown>) => void;
   onDigitizationComplete?: () => void;
 }
 
-type UploadPhase = 'idle' | 'uploading' | 'digitizing' | 'complete';
-
 export function FloorPlanUpload({
   projectId,
+  disabled,
   onUploadComplete,
-  onDigitizationComplete,
 }: FloorPlanUploadProps) {
-  const [phase, setPhase] = useState<UploadPhase>('idle');
+  const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [uploadedFile, setUploadedFile] = useState<{
-    filename: string;
-    storageKey: string;
-    mimeType: string;
-  } | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleUpload = useCallback(
     async (file: File) => {
-      // Validate file type
+      if (disabled) {
+        setError('Please enter a name before uploading.');
+        return;
+      }
+
       const ext = file.name.split('.').pop()?.toLowerCase();
-      const validExt = ['png', 'jpg', 'jpeg', 'webp', 'pdf', 'dxf', 'dwg'];
+      const validExt = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'pdf', 'dwg', 'dxf'];
       if (!validExt.includes(ext ?? '')) {
-        setError(
-          `Unsupported file type. Accepted: ${validExt.join(', ')}`,
-        );
+        setError(`Unsupported file type. Accepted: ${validExt.join(', ')}`);
         return;
       }
 
       setError(null);
-      setPhase('uploading');
+      setUploading(true);
       setUploadProgress(10);
 
       const formData = new FormData();
@@ -80,64 +68,22 @@ export function FloorPlanUpload({
 
         const upload = await res.json();
         setUploadProgress(100);
-        setUploadedFile({
-          filename: upload.filename ?? file.name,
-          storageKey: upload.storageKey ?? '',
-          mimeType: upload.mimeType ?? file.type,
-        });
-
-        // Generate preview for images
-        if (file.type.startsWith('image/')) {
-          setPreviewUrl(URL.createObjectURL(file));
-        }
 
         onUploadComplete?.(upload);
         toast({ title: 'Floor plan uploaded' });
 
-        // Start digitization automatically
-        setPhase('digitizing');
-        setUploadProgress(0);
-
-        // Trigger floor plan digitization job
-        try {
-          const jobRes = await fetch('/api/jobs/floor-plan-digitize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              projectId,
-              uploadId: upload.id,
-              storageKey: upload.storageKey,
-            }),
-          });
-
-          if (jobRes.ok) {
-            const job = await jobRes.json();
-            setJobId(job.id ?? null);
-          } else {
-            // Digitization service may not be available
-            setPhase('complete');
-            toast({
-              title: 'Floor plan uploaded',
-              description:
-                'Digitization service unavailable. Floor plan saved as-is.',
-            });
-          }
-        } catch {
-          // Service unavailable - still mark as complete
-          setPhase('complete');
-          toast({
-            title: 'Floor plan uploaded',
-            description:
-              'Digitization service unavailable. Floor plan saved as-is.',
-          });
-        }
+        // Reset after short delay so progress bar shows 100%
+        setTimeout(() => {
+          setUploading(false);
+          setUploadProgress(0);
+        }, 500);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Upload failed');
-        setPhase('idle');
+        setUploading(false);
         setUploadProgress(0);
       }
     },
-    [projectId, onUploadComplete],
+    [projectId, disabled, onUploadComplete],
   );
 
   const handleDrop = useCallback(
@@ -156,110 +102,22 @@ export function FloorPlanUpload({
     e.target.value = '';
   };
 
-  const handleReset = () => {
-    setPhase('idle');
-    setUploadedFile(null);
-    setJobId(null);
-    setPreviewUrl(null);
-    setError(null);
-    setUploadProgress(0);
-  };
-
-  if (phase === 'complete' || (phase === 'digitizing' && !jobId)) {
-    return (
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-5 w-5 text-green-600" />
-            <CardTitle className="text-base">Floor Plan Uploaded</CardTitle>
-          </div>
-          {uploadedFile && (
-            <CardDescription>{uploadedFile.filename}</CardDescription>
-          )}
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {previewUrl && (
-            <div className="overflow-hidden rounded-lg border">
-              <img
-                src={previewUrl}
-                alt="Floor plan preview"
-                className="w-full"
-              />
-            </div>
-          )}
-          {uploadedFile && !previewUrl && (
-            <div className="flex items-center gap-3 rounded-lg border p-4">
-              <FileText className="h-8 w-8 text-muted-foreground" />
-              <div>
-                <p className="text-sm font-medium">{uploadedFile.filename}</p>
-                <p className="text-xs text-muted-foreground">
-                  {uploadedFile.mimeType}
-                </p>
-              </div>
-            </div>
-          )}
-          <Button variant="outline" size="sm" onClick={handleReset}>
-            Upload Another
-          </Button>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (phase === 'digitizing' && jobId) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Digitizing Floor Plan</CardTitle>
-          <CardDescription>
-            Converting your floor plan into a digital format with room
-            detection...
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {previewUrl && (
-            <div className="overflow-hidden rounded-lg border opacity-50">
-              <img
-                src={previewUrl}
-                alt="Floor plan being processed"
-                className="w-full"
-              />
-            </div>
-          )}
-          <JobProgress
-            jobId={jobId}
-            onComplete={() => {
-              setPhase('complete');
-              onDigitizationComplete?.();
-              toast({ title: 'Floor plan digitized successfully' });
-            }}
-            onFailed={(err) => {
-              setPhase('complete');
-              toast({
-                title: 'Digitization failed',
-                description: err ?? 'Please try again.',
-              });
-            }}
-          />
-        </CardContent>
-      </Card>
-    );
-  }
-
   return (
     <div>
       <div
         className={`relative flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-8 transition-colors ${
-          dragActive
-            ? 'border-primary bg-primary/5'
-            : 'border-muted-foreground/25 hover:border-muted-foreground/50'
+          disabled
+            ? 'border-muted-foreground/15 opacity-50 cursor-not-allowed'
+            : dragActive
+              ? 'border-primary bg-primary/5'
+              : 'border-muted-foreground/25 hover:border-muted-foreground/50'
         }`}
         onDragOver={(e) => {
           e.preventDefault();
-          setDragActive(true);
+          if (!disabled) setDragActive(true);
         }}
         onDragLeave={() => setDragActive(false)}
-        onDrop={handleDrop}
+        onDrop={disabled ? (e) => e.preventDefault() : handleDrop}
       >
         <input
           ref={inputRef}
@@ -269,11 +127,11 @@ export function FloorPlanUpload({
           onChange={handleChange}
         />
 
-        {phase === 'uploading' ? (
+        {uploading ? (
           <div className="w-full space-y-3">
             <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
               <Upload className="h-4 w-4 animate-pulse" />
-              Uploading floor plan...
+              Uploading...
             </div>
             <Progress value={uploadProgress} />
           </div>
@@ -282,17 +140,18 @@ export function FloorPlanUpload({
             <FileImage className="mb-3 h-10 w-10 text-muted-foreground" />
             <h3 className="mb-1 text-sm font-medium">Upload Floor Plan</h3>
             <p className="mb-3 text-center text-sm text-muted-foreground">
-              Drag and drop your floor plan, or click to browse
+              Drag and drop an image, PDF, DWG, or DXF file
             </p>
             <Button
               variant="outline"
               size="sm"
+              disabled={disabled}
               onClick={() => inputRef.current?.click()}
             >
               Choose File
             </Button>
             <div className="mt-3 flex flex-wrap justify-center gap-1.5">
-              {['DWG', 'DXF', 'PDF', 'PNG', 'JPG'].map((ext) => (
+              {['PNG', 'JPG', 'WEBP', 'GIF', 'PDF', 'DWG', 'DXF'].map((ext) => (
                 <Badge key={ext} variant="secondary" className="text-xs">
                   {ext}
                 </Badge>

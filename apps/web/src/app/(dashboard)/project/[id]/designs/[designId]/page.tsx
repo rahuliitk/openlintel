@@ -3,9 +3,13 @@
 import { use, useState } from 'react';
 import Link from 'next/link';
 import { trpc } from '@/lib/trpc/client';
-import { DesignResultViewer } from '@/components/design-result-viewer';
-import { DesignGenerationDialog } from '@/components/design-generation-dialog';
-import { JobProgress } from '@/components/job-progress';
+import dynamic from 'next/dynamic';
+
+const DesignResultViewer = dynamic(() => import('@/components/design-result-viewer').then(m => m.DesignResultViewer), {
+  loading: () => <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">Loading viewer...</div>,
+});
+const DesignGenerationDialog = dynamic(() => import('@/components/design-generation-dialog').then(m => m.DesignGenerationDialog));
+const JobProgress = dynamic(() => import('@/components/job-progress').then(m => m.JobProgress));
 import {
   Button,
   Card,
@@ -32,6 +36,7 @@ import {
   MessageSquare,
   Send,
   ImageIcon,
+  Trash2,
 } from 'lucide-react';
 
 export default function DesignDetailPage({
@@ -96,6 +101,14 @@ export default function DesignDetailPage({
     },
   });
 
+  // Delete drawing mutation
+  const deleteDrawing = trpc.drawing.delete.useMutation({
+    onSuccess: () => {
+      utils.drawing.listByDesignVariant.invalidate({ designVariantId: designId });
+      toast({ title: 'Drawing deleted' });
+    },
+  });
+
   const handleGenerateBOM = () => {
     generateBOM.mutate({ designVariantId: designId });
   };
@@ -136,7 +149,10 @@ export default function DesignDetailPage({
     );
   }
 
-  const beforeImage = roomUploads.find((u: any) => u.mimeType.startsWith('image/'));
+  // Use the specific source photo (the one selected during generation) for before/after
+  const beforeImage = variant.sourceUploadId
+    ? roomUploads.find((u: any) => u.id === variant.sourceUploadId)
+    : roomUploads.find((u: any) => u.mimeType?.startsWith('image/'));
   const beforeImageUrl = beforeImage
     ? `/api/uploads/${encodeURIComponent(beforeImage.storageKey)}`
     : null;
@@ -176,6 +192,7 @@ export default function DesignDetailPage({
             projectId={projectId}
             currentStyle={variant.style}
             currentBudget={variant.budgetTier}
+            currentRoomType={variant.roomType}
             onGenerated={() => {
               utils.designVariant.listByProject.invalidate({ projectId });
             }}
@@ -215,6 +232,7 @@ export default function DesignDetailPage({
             budgetTier={variant.budgetTier}
             constraints={constraints}
             variantName={variant.name}
+            specJson={variant.specJson as any}
             onGenerateBOM={handleGenerateBOM}
             onGenerateDrawings={handleGenerateDrawings}
           />
@@ -249,6 +267,9 @@ export default function DesignDetailPage({
                       designVariantId: designId,
                     });
                     setBomJobId(null);
+                  }}
+                  onFailed={(error) => {
+                    toast({ title: 'BOM generation failed', description: error });
                   }}
                 />
               </CardContent>
@@ -366,6 +387,9 @@ export default function DesignDetailPage({
                     });
                     setDrawingJobId(null);
                   }}
+                  onFailed={(error) => {
+                    toast({ title: 'Drawing generation failed', description: error });
+                  }}
                 />
               </CardContent>
             </Card>
@@ -373,58 +397,119 @@ export default function DesignDetailPage({
 
           {drawingResults.length > 0 ? (
             <div className="grid gap-4 sm:grid-cols-2">
-              {drawingResults.map((drawing: any) => (
-                <Card key={drawing.id}>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-sm">
-                      <FileText className="h-4 w-4" />
-                      {drawing.drawingType
-                        .replace(/_/g, ' ')
-                        .replace(/\b\w/g, (c: string) => c.toUpperCase())}
-                    </CardTitle>
-                    <CardDescription className="text-xs">
-                      Generated{' '}
-                      {new Date(drawing.createdAt).toLocaleDateString()}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="flex gap-2">
-                      {drawing.pdfStorageKey && (
-                        <Button variant="outline" size="sm" asChild>
-                          <a
-                            href={`/api/uploads/${encodeURIComponent(drawing.pdfStorageKey)}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            View PDF
-                          </a>
-                        </Button>
+              {drawingResults.map((drawing: any) => {
+                const meta = drawing.metadata as Record<string, any> | null;
+                return (
+                  <Card key={drawing.id}>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-sm">
+                        <FileText className="h-4 w-4" />
+                        {drawing.drawingType
+                          .replace(/_/g, ' ')
+                          .replace(/\b\w/g, (c: string) => c.toUpperCase())}
+                      </CardTitle>
+                      <CardDescription className="text-xs">
+                        {meta?.drawingNumber && `${meta.drawingNumber} · `}
+                        Generated{' '}
+                        {new Date(drawing.createdAt).toLocaleDateString()}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {meta?.description && (
+                        <p className="text-sm text-muted-foreground">
+                          {meta.description}
+                        </p>
                       )}
-                      {drawing.svgStorageKey && (
-                        <Button variant="outline" size="sm" asChild>
-                          <a
-                            href={`/api/uploads/${encodeURIComponent(drawing.svgStorageKey)}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            View SVG
-                          </a>
-                        </Button>
+                      <div className="flex flex-wrap gap-2">
+                        {meta?.scale && (
+                          <Badge variant="outline" className="text-xs">
+                            Scale: {meta.scale}
+                          </Badge>
+                        )}
+                        {meta?.paperSize && (
+                          <Badge variant="outline" className="text-xs">
+                            {meta.paperSize}
+                          </Badge>
+                        )}
+                        {meta?.revision && (
+                          <Badge variant="outline" className="text-xs">
+                            {meta.revision}
+                          </Badge>
+                        )}
+                      </div>
+                      {meta?.keyElements && Array.isArray(meta.keyElements) && (
+                        <div>
+                          <p className="text-xs font-medium mb-1">Key Elements:</p>
+                          <div className="flex flex-wrap gap-1">
+                            {meta.keyElements.map((el: string, i: number) => (
+                              <Badge key={i} variant="secondary" className="text-xs">
+                                {el}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
                       )}
-                      {drawing.dxfStorageKey && (
-                        <Button variant="outline" size="sm" asChild>
-                          <a
-                            href={`/api/uploads/${encodeURIComponent(drawing.dxfStorageKey)}`}
-                            download
-                          >
-                            Download DXF
-                          </a>
-                        </Button>
+                      {meta?.notes && Array.isArray(meta.notes) && meta.notes.length > 0 && (
+                        <div>
+                          <p className="text-xs font-medium mb-1">Notes:</p>
+                          <ul className="list-disc pl-4 text-xs text-muted-foreground space-y-0.5">
+                            {meta.notes.map((note: string, i: number) => (
+                              <li key={i}>{note}</li>
+                            ))}
+                          </ul>
+                        </div>
                       )}
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                      <div className="flex items-center gap-2">
+                        {drawing.pdfStorageKey && (
+                          <Button variant="outline" size="sm" asChild>
+                            <a
+                              href={`/api/uploads/${encodeURIComponent(drawing.pdfStorageKey)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              View PDF
+                            </a>
+                          </Button>
+                        )}
+                        {drawing.svgStorageKey && (
+                          <Button variant="outline" size="sm" asChild>
+                            <a
+                              href={`/api/uploads/${encodeURIComponent(drawing.svgStorageKey)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              View SVG
+                            </a>
+                          </Button>
+                        )}
+                        {drawing.dxfStorageKey && (
+                          <Button variant="outline" size="sm" asChild>
+                            <a
+                              href={`/api/uploads/${encodeURIComponent(drawing.dxfStorageKey)}`}
+                              download
+                            >
+                              Download DXF
+                            </a>
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="ml-auto text-destructive hover:text-destructive"
+                          disabled={deleteDrawing.isPending}
+                          onClick={() => {
+                            if (confirm('Delete this drawing?')) {
+                              deleteDrawing.mutate({ id: drawing.id });
+                            }
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           ) : (
             !drawingJobId && (
@@ -497,6 +582,7 @@ export default function DesignDetailPage({
               projectId={projectId}
               currentStyle={variant.style}
               currentBudget={variant.budgetTier}
+              currentRoomType={variant.roomType}
               onGenerated={() => {
                 utils.designVariant.listByProject.invalidate({ projectId });
               }}
@@ -508,7 +594,7 @@ export default function DesignDetailPage({
               }
             />
             <Button variant="outline" size="sm" asChild>
-              <Link href={`/project/${projectId}/editor`}>
+              <Link href={`/project/${projectId}/editor?variant=${designId}`}>
                 <Box className="mr-1 h-4 w-4" />
                 View in 3D Editor
               </Link>
