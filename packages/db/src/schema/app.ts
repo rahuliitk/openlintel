@@ -2261,6 +2261,21 @@ export const complianceChatMessages = pgTable('compliance_chat_messages', {
   createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 });
 
+// ---------------------------------------------------------------------------
+// AR/VR Sessions — persisted AR placement & VR walkthrough state
+// ---------------------------------------------------------------------------
+export const arVrSessions = pgTable('ar_vr_sessions', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  mode: text('mode').notNull().default('ar'), // 'ar' | 'vr'
+  placedItems: jsonb('placed_items'), // ARPlacedItem[]
+  vrState: jsonb('vr_state'), // { currentRoomId, activeWaypointId, locomotionMode }
+  thumbnailUrl: text('thumbnail_url'),
+  createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { mode: 'date' }).defaultNow().notNull(),
+});
+
 export const designFeedback = pgTable('design_feedback', {
   id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
   designVariantId: text('design_variant_id').notNull().references(() => designVariants.id, { onDelete: 'cascade' }),

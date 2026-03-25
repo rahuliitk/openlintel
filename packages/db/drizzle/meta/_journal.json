@@ -29,6 +29,13 @@
       "when": 1773861559579,
       "tag": "0003_confused_paladin",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1774276618704,
+      "tag": "0004_moaning_wendell_vaughn",
+      "breakpoints": true
     }
   ]
 }

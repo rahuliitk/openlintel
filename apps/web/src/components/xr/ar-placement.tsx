@@ -95,34 +95,6 @@ export function ARPlacement({
 
   const activeItem = placedItems.find((i) => i.id === activeItemId);
 
-  if (!sessionActive) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-4 py-12">
-        <Smartphone className="h-16 w-16 text-muted-foreground" />
-        <div className="text-center">
-          <p className="font-medium">AR Placement Mode</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Start an AR session to place furniture in your space.
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 text-xs text-muted-foreground">
-          <div className="flex items-center gap-2">
-            <Target className="h-4 w-4" />
-            <span>Point your camera at a flat surface</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Move className="h-4 w-4" />
-            <span>Tap to place furniture</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Maximize2 className="h-4 w-4" />
-            <span>Pinch to resize objects</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-4">
       {/* Surface detection status */}
@@ -136,9 +108,9 @@ export function ARPlacement({
       >
         <Target className="h-4 w-4" />
         {surfaceDetected ? (
-          <span>Surface detected. Tap to place furniture.</span>
+          <span>Surface detected. Select furniture and place it.</span>
         ) : (
-          <span>Scanning for surfaces... Move your device slowly.</span>
+          <span>Detecting surface...</span>
         )}
         {!surfaceDetected && (
           <Button
@@ -147,7 +119,7 @@ export function ARPlacement({
             className="ml-auto h-6 text-xs"
             onClick={handleSurfaceCheck}
           >
-            Simulate
+            Detect
           </Button>
         )}
       </div>
@@ -155,7 +127,7 @@ export function ARPlacement({
       {/* Item selector */}
       <div>
         <p className="mb-2 text-xs font-medium text-muted-foreground">Select Furniture</p>
-        <div className="grid grid-cols-2 gap-1.5">
+        <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto">
           {items.map((item, idx) => (
             <button
               key={idx}

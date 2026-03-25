@@ -99,6 +99,8 @@ import { structuralRouter } from './structural';
 import { siteAnalysisRouter } from './siteAnalysis';
 import { energyModelRouter } from './energyModel';
 import { acousticRouter } from './acoustic';
+// F8: AR/VR
+import { arVrRouter } from './arVr';
 
 export const appRouter = router({
   project: projectRouter,
@@ -210,6 +212,8 @@ export const appRouter = router({
   siteAnalysis: siteAnalysisRouter,
   energy: energyModelRouter,
   acoustics: acousticRouter,
+  // F8: AR/VR
+  arVr: arVrRouter,
 });
 
 export type AppRouter = typeof appRouter;

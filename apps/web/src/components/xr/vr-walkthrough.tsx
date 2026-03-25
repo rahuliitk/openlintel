@@ -12,6 +12,7 @@ import {
   RotateCcw,
   MapPin,
   Glasses,
+  Ruler,
 } from 'lucide-react';
 
 export interface VRWaypoint {
@@ -27,7 +28,7 @@ export interface VRWaypoint {
 
 interface VRWalkthroughProps {
   /** Available rooms to navigate between. */
-  rooms: { id: string; name: string; type: string }[];
+  rooms: { id: string; name: string; type: string; lengthMm?: number | null; widthMm?: number | null; heightMm?: number | null }[];
   /** Predefined waypoints for teleportation. */
   waypoints: VRWaypoint[];
   /** Currently active waypoint. */
@@ -62,43 +63,41 @@ export function VRWalkthrough({
     if (roomWaypoints.length === 0) return;
     const prevIndex =
       currentWaypointIndex <= 0 ? roomWaypoints.length - 1 : currentWaypointIndex - 1;
-    onTeleport(roomWaypoints[prevIndex].id);
+    onTeleport(roomWaypoints[prevIndex]!.id);
   }, [roomWaypoints, currentWaypointIndex, onTeleport]);
 
   const handleNextWaypoint = useCallback(() => {
     if (roomWaypoints.length === 0) return;
     const nextIndex =
       currentWaypointIndex >= roomWaypoints.length - 1 ? 0 : currentWaypointIndex + 1;
-    onTeleport(roomWaypoints[nextIndex].id);
+    onTeleport(roomWaypoints[nextIndex]!.id);
   }, [roomWaypoints, currentWaypointIndex, onTeleport]);
 
-  if (!sessionActive) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-4 py-12">
-        <Glasses className="h-16 w-16 text-muted-foreground" />
-        <div className="text-center">
-          <p className="font-medium">VR Room Walkthrough</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Put on your VR headset and explore your designed rooms in immersive 3D.
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 text-xs text-muted-foreground">
-          <div className="flex items-center gap-2">
-            <Footprints className="h-4 w-4" />
-            <span>Teleport between waypoints using your controller</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Navigation className="h-4 w-4" />
-            <span>Navigate between rooms seamlessly</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Eye className="h-4 w-4" />
-            <span>Look around to explore every detail</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // Navigate to next/previous room
+  const handlePrevRoom = useCallback(() => {
+    const idx = rooms.findIndex(r => r.id === currentRoomId);
+    const prevIdx = idx <= 0 ? rooms.length - 1 : idx - 1;
+    const prevRoom = rooms[prevIdx];
+    if (!prevRoom) return;
+    onRoomChange(prevRoom.id);
+    const centerWp = waypoints.find(w => w.roomId === prevRoom.id && w.name.includes('Center'));
+    if (centerWp) onTeleport(centerWp.id);
+  }, [rooms, currentRoomId, onRoomChange, waypoints, onTeleport]);
+
+  const handleNextRoom = useCallback(() => {
+    const idx = rooms.findIndex(r => r.id === currentRoomId);
+    const nextIdx = idx >= rooms.length - 1 ? 0 : idx + 1;
+    const nextRoom = rooms[nextIdx];
+    if (!nextRoom) return;
+    onRoomChange(nextRoom.id);
+    const centerWp = waypoints.find(w => w.roomId === nextRoom.id && w.name.includes('Center'));
+    if (centerWp) onTeleport(centerWp.id);
+  }, [rooms, currentRoomId, onRoomChange, waypoints, onTeleport]);
+
+  const formatDimension = (mm: number | null | undefined) => {
+    if (!mm) return '—';
+    return `${(mm / 1000).toFixed(1)}m`;
+  };
 
   return (
     <div className="space-y-4">
@@ -121,8 +120,38 @@ export function VRWalkthrough({
               {locomotionMode === 'teleport' ? 'Teleport' : 'Smooth'}
             </Badge>
           </div>
+
+          {/* Room dimensions */}
+          {currentRoom && (currentRoom.lengthMm || currentRoom.widthMm) && (
+            <div className="mt-2 flex items-center gap-3 rounded-md bg-muted/50 px-2 py-1.5 text-[10px] text-muted-foreground">
+              <Ruler className="h-3 w-3 shrink-0" />
+              <span>{formatDimension(currentRoom.lengthMm)} x {formatDimension(currentRoom.widthMm)}</span>
+              {currentRoom.heightMm && (
+                <span className="opacity-60">h: {formatDimension(currentRoom.heightMm)}</span>
+              )}
+              <span className="opacity-60">{currentRoom.type.replace(/_/g, ' ')}</span>
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {/* Room quick navigation */}
+      {rooms.length > 1 && (
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="h-8 w-8 p-0" onClick={handlePrevRoom}>
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <div className="flex-1 text-center">
+            <p className="text-xs font-medium">{currentRoom?.name ?? 'Select room'}</p>
+            <p className="text-[10px] text-muted-foreground">
+              Room {rooms.findIndex(r => r.id === currentRoomId) + 1} of {rooms.length}
+            </p>
+          </div>
+          <Button variant="outline" size="sm" className="h-8 w-8 p-0" onClick={handleNextRoom}>
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
 
       {/* Locomotion mode */}
       <div>
@@ -158,7 +187,7 @@ export function VRWalkthrough({
       {/* Waypoint navigation */}
       {roomWaypoints.length > 0 && (
         <div>
-          <p className="mb-2 text-xs font-medium text-muted-foreground">Waypoints</p>
+          <p className="mb-2 text-xs font-medium text-muted-foreground">Viewpoints</p>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
@@ -172,7 +201,7 @@ export function VRWalkthrough({
               <p className="text-xs font-medium">
                 {activeWaypointId
                   ? waypoints.find((w) => w.id === activeWaypointId)?.name
-                  : 'Select a waypoint'}
+                  : 'Select a viewpoint'}
               </p>
               <p className="text-[10px] text-muted-foreground">
                 {currentWaypointIndex + 1} / {roomWaypoints.length}
@@ -199,8 +228,8 @@ export function VRWalkthrough({
                 )}
                 onClick={() => onTeleport(wp.id)}
               >
-                <MapPin className="h-3 w-3 shrink-0" />
-                {wp.name}
+                <Eye className="h-3 w-3 shrink-0" />
+                {wp.name.split(' - ')[1] ?? wp.name}
               </button>
             ))}
           </div>
@@ -209,8 +238,8 @@ export function VRWalkthrough({
 
       {/* Room navigation */}
       <div>
-        <p className="mb-2 text-xs font-medium text-muted-foreground">Rooms</p>
-        <div className="space-y-1">
+        <p className="mb-2 text-xs font-medium text-muted-foreground">All Rooms</p>
+        <div className="space-y-1 max-h-48 overflow-y-auto">
           {rooms.map((room) => (
             <button
               key={room.id}
@@ -220,21 +249,40 @@ export function VRWalkthrough({
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-muted text-muted-foreground hover:bg-muted/80',
               )}
-              onClick={() => onRoomChange(room.id)}
+              onClick={() => {
+                onRoomChange(room.id);
+                const centerWp = waypoints.find(w => w.roomId === room.id && w.name.includes('Center'));
+                if (centerWp) onTeleport(centerWp.id);
+              }}
             >
               <span>{room.name}</span>
-              <span className="text-[10px] opacity-70">
-                {room.type.replace(/_/g, ' ')}
-              </span>
+              <div className="flex items-center gap-2">
+                {room.lengthMm && room.widthMm && (
+                  <span className="text-[10px] opacity-60">
+                    {(room.lengthMm / 1000).toFixed(1)} x {(room.widthMm / 1000).toFixed(1)}m
+                  </span>
+                )}
+                <span className="text-[10px] opacity-70">
+                  {room.type.replace(/_/g, ' ')}
+                </span>
+              </div>
             </button>
           ))}
         </div>
       </div>
 
       {/* Reset position */}
-      <Button variant="outline" size="sm" className="w-full" onClick={handlePrevWaypoint}>
+      <Button
+        variant="outline"
+        size="sm"
+        className="w-full"
+        onClick={() => {
+          const centerWp = waypoints.find(w => w.roomId === currentRoomId && w.name.includes('Center'));
+          if (centerWp) onTeleport(centerWp.id);
+        }}
+      >
         <RotateCcw className="mr-1 h-4 w-4" />
-        Reset Position
+        Reset to Room Center
       </Button>
     </div>
   );

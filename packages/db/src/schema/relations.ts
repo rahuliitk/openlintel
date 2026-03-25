@@ -42,6 +42,7 @@ import {
   integrationConfigs, communicationPreferences, propertyValuations,
   serviceBookings, sampleRequests,
   marketBenchmarks, laborRates, postOccupancySurveys, lessonsLearned, designFeedback,
+  arVrSessions,
 } from './app';
 
 // ─── Auth Relations ──────────────────────────────────────────────────────────
@@ -731,4 +732,7 @@ export const complianceChatMessagesRelations = relations(complianceChatMessages,
 }));
 export const designFeedbackRelations = relations(designFeedback, ({ one }) => ({
   designVariant: one(designVariants, { fields: [designFeedback.designVariantId], references: [designVariants.id] }),
+}));
+export const arVrSessionsRelations = relations(arVrSessions, ({ one }) => ({
+  project: one(projects, { fields: [arVrSessions.projectId], references: [projects.id] }),
 }));
