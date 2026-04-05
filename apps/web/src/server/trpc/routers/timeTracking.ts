@@ -21,6 +21,36 @@ export const timeTrackingRouter = router({
       });
     }),
 
+  // ── Create time entry (from UI) ──────────────────────────
+  create: protectedProcedure
+    .input(z.object({
+      projectId: z.string(),
+      description: z.string(),
+      category: z.string().optional(),
+      durationMinutes: z.number().min(1),
+      hourlyRate: z.number().optional(),
+      date: z.string(),
+      notes: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const project = await ctx.db.query.projects.findFirst({
+        where: and(eq(projects.id, input.projectId), eq(projects.userId, ctx.userId)),
+      });
+      if (!project) throw new Error('Project not found');
+      const hours = Math.round((input.durationMinutes / 60) * 100) / 100;
+      const desc = [input.description, input.notes].filter(Boolean).join(' — ');
+      const [entry] = await ctx.db.insert(timeEntries).values({
+        userId: ctx.userId,
+        projectId: input.projectId,
+        date: new Date(input.date),
+        hours,
+        description: desc || null,
+        billable: input.hourlyRate != null && input.hourlyRate > 0,
+        rate: input.hourlyRate ?? null,
+      }).returning();
+      return entry;
+    }),
+
   // ── Log time entry ──────────────────────────────────────
   log: protectedProcedure
     .input(z.object({

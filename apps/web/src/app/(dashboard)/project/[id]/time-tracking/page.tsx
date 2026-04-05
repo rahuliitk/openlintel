@@ -79,7 +79,7 @@ export default function TimeTrackingPage({ params }: { params: Promise<{ id: str
   const [hours, setHours] = useState('');
   const [minutes, setMinutes] = useState('');
   const [hourlyRate, setHourlyRate] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]!);
   const [notes, setNotes] = useState('');
   const [activeTimer, setActiveTimer] = useState<string | null>(null);
   const [timerStart, setTimerStart] = useState<Date | null>(null);
@@ -112,7 +112,7 @@ export default function TimeTrackingPage({ params }: { params: Promise<{ id: str
     setHours('');
     setMinutes('');
     setHourlyRate('');
-    setDate(new Date().toISOString().split('T')[0]);
+    setDate(new Date().toISOString().split('T')[0]!);
     setNotes('');
   }
 
@@ -148,19 +148,18 @@ export default function TimeTrackingPage({ params }: { params: Promise<{ id: str
     setDialogOpen(true);
   }
 
-  const totalMinutes = entries.reduce((sum: number, e: any) => sum + (e.durationMinutes || 0), 0);
+  const totalMinutes = entries.reduce((sum: number, e: any) => sum + Math.round((e.hours || 0) * 60), 0);
   const totalBillable = entries.reduce((sum: number, e: any) => {
-    const rate = e.hourlyRate || 0;
-    return sum + (rate * (e.durationMinutes || 0)) / 60;
+    return sum + (e.hours || 0) * (e.rate || 0);
   }, 0);
 
   // Group entries by date for weekly view
   const entriesByDate = entries.reduce((acc: Record<string, any[]>, entry: any) => {
-    const d = new Date(entry.date).toISOString().split('T')[0];
+    const d = new Date(entry.date).toISOString().split('T')[0]!;
     if (!acc[d]) acc[d] = [];
-    acc[d].push(entry);
+    acc[d]!.push(entry);
     return acc;
-  }, {});
+  }, {} as Record<string, any[]>);
 
   /* ── Loading state ────────────────────────────────────────── */
   if (isLoading) {
@@ -360,10 +359,10 @@ export default function TimeTrackingPage({ params }: { params: Promise<{ id: str
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="text-right">
-                      <p className="text-sm font-bold">{formatDuration(entry.durationMinutes || 0)}</p>
-                      {entry.hourlyRate > 0 && (
+                      <p className="text-sm font-bold">{formatDuration(Math.round((entry.hours || 0) * 60))}</p>
+                      {entry.rate > 0 && (
                         <p className="text-xs text-green-600">
-                          ${((entry.hourlyRate * (entry.durationMinutes || 0)) / 60).toFixed(0)}
+                          ${((entry.rate * (entry.hours || 0))).toFixed(0)}
                         </p>
                       )}
                     </div>
@@ -380,7 +379,7 @@ export default function TimeTrackingPage({ params }: { params: Promise<{ id: str
             {Object.entries(entriesByDate)
               .sort(([a], [b]) => b.localeCompare(a))
               .map(([dateKey, dateEntries]) => {
-                const dayTotal = (dateEntries as any[]).reduce((sum, e) => sum + (e.durationMinutes || 0), 0);
+                const dayTotal = (dateEntries as any[]).reduce((sum, e) => sum + Math.round((e.hours || 0) * 60), 0);
                 return (
                   <div key={dateKey}>
                     <div className="mb-2 flex items-center justify-between">
@@ -397,7 +396,7 @@ export default function TimeTrackingPage({ params }: { params: Promise<{ id: str
                             <p className="text-sm">{entry.description}</p>
                             <p className="text-xs text-muted-foreground">{entry.category?.replace(/_/g, ' ')}</p>
                           </div>
-                          <span className="text-sm font-medium">{formatDuration(entry.durationMinutes || 0)}</span>
+                          <span className="text-sm font-medium">{formatDuration(Math.round((entry.hours || 0) * 60))}</span>
                         </div>
                       ))}
                     </div>
